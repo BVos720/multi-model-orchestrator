@@ -146,8 +146,8 @@ def settings_list():
     """Show every agent - built-in and custom - and whether it's ready."""
     click.echo("Built-in agents:")
     click.echo(f"  {'claude-code':12} " + ("ok (CLI login)" if shutil.which("claude") else "claude CLI not found"))
-    if shutil.which("gemini"):
-        click.echo(f"  {'gemini':12} ok (Google account login via gemini CLI)")
+    if shutil.which("agy"):
+        click.echo(f"  {'gemini':12} ok (Google account login via Antigravity CLI)")
     elif os.environ.get("GEMINI_API_KEY"):
         click.echo(f"  {'gemini':12} ok (GEMINI_API_KEY)")
     else:
@@ -235,18 +235,28 @@ def settings_add(name: str, preset: str | None, base_url: str | None, model: str
     Already added this provider and want a second account (e.g. two Groq
     signups, to pool their rate limits)? Use `settings add-account` instead.
 
-    NAME "gemini" is special-cased to just set GEMINI_API_KEY - prefer
-    `npm install -g @google/gemini-cli && gemini` instead, which needs no key.
+    NAME "gemini" is special-cased - prefer Antigravity CLI instead (Windows:
+    irm https://antigravity.google/cli/install.ps1 | iex, then run `agy` once),
+    which needs no key. Falls back to prompting for GEMINI_API_KEY if you'd
+    rather not use the CLI.
     NAME "copilot" is special-cased too - prefer `npm install -g @github/copilot
     && copilot` (GitHub account login), no key needed either.
     Anything else is added as an OpenAI-compatible agent via .env + providers.json.
     """
-    if name in ("gemini", "copilot"):
-        cli_name = "gemini" if name == "gemini" else "copilot"
-        if shutil.which(cli_name):
-            click.echo(f"{cli_name} CLI is already installed and preferred - no key needed once you're logged in.")
+    if name == "gemini":
+        if shutil.which("agy"):
+            click.echo("Antigravity CLI (agy) is already installed and preferred - no key needed once you're logged in.")
             return
-        click.echo(f"{cli_name} CLI not found. GEMINI_API_KEY-style key fallback isn't offered for '{name}'.")
+        click.echo("agy (Antigravity CLI) not found. Falling back to GEMINI_API_KEY.")
+        key = click.prompt("GEMINI_API_KEY (input hidden)", hide_input=True)
+        save_gemini_key(key)
+        click.echo("Saved GEMINI_API_KEY to .env")
+        return
+    if name == "copilot":
+        if shutil.which("copilot"):
+            click.echo("copilot CLI is already installed and preferred - no key needed once you're logged in.")
+        else:
+            click.echo("copilot CLI not found. No API-key fallback is offered for Copilot - install it: npm install -g @github/copilot")
         return
 
     if SettingsStore().get(name):

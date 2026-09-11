@@ -86,8 +86,8 @@ def _view_tasks() -> None:
 def _print_settings_list() -> None:
     print("Built-in agents:")
     print(f"  {'claude-code':12} " + ("ok (CLI login)" if shutil.which("claude") else "claude CLI not found"))
-    if shutil.which("gemini"):
-        print(f"  {'gemini':12} ok (Google account login via gemini CLI)")
+    if shutil.which("agy"):
+        print(f"  {'gemini':12} ok (Google account login via Antigravity CLI)")
     elif os.environ.get("GEMINI_API_KEY"):
         print(f"  {'gemini':12} ok (GEMINI_API_KEY)")
     else:
@@ -199,7 +199,7 @@ def _ask_question() -> None:
 def _add_agent_menu() -> None:
     registered = {p.name for p in SettingsStore().load()}
     choices = [
-        questionary.Choice("gemini (Google account login preferred - see README)", value="gemini"),
+        questionary.Choice("gemini (Google account login via Antigravity CLI preferred - see README)", value="gemini"),
         questionary.Choice("copilot (GitHub account login preferred - see README)", value="copilot"),
     ]
     for name, cfg in PRESETS.items():
@@ -213,15 +213,20 @@ def _add_agent_menu() -> None:
     if not choice:
         return
 
-    if choice in ("gemini", "copilot"):
-        cli_name = choice
-        if shutil.which(cli_name):
-            print(f"{cli_name} CLI is already installed and preferred - no key needed once you're logged in.")
-        elif choice == "gemini":
-            key = questionary.password("GEMINI_API_KEY (fallback if you won't use the CLI):", style=STYLE).ask()
+    if choice == "gemini":
+        if shutil.which("agy"):
+            print("Antigravity CLI (agy) is already installed and preferred - no key needed once you're logged in.")
+        else:
+            print("agy (Antigravity CLI) not found - falling back to GEMINI_API_KEY.")
+            key = questionary.password("GEMINI_API_KEY (fallback if you won't use Antigravity CLI):", style=STYLE).ask()
             if key:
                 save_gemini_key(key)
                 print("Saved GEMINI_API_KEY to .env")
+        _pause()
+        return
+    if choice == "copilot":
+        if shutil.which("copilot"):
+            print("copilot CLI is already installed and preferred - no key needed once you're logged in.")
         else:
             print("Install with: npm install -g @github/copilot, then run `copilot` once to log in.")
         _pause()

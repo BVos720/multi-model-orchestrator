@@ -10,7 +10,7 @@ class CopilotCliAgent(Agent):
     """Wraps GitHub's `copilot` CLI - authenticates via your GitHub account
     (device-code login), NOT a separate API key. Usage draws on your GitHub
     Copilot plan (Free/Pro/Business/Enterprise), the same "ride the existing
-    subscription login" pattern as ClaudeCodeAgent and GeminiCliAgent.
+    subscription login" pattern as ClaudeCodeAgent and AntigravityCliAgent.
 
     First-time setup (one-time, must be done by you interactively - it's
     your GitHub login, not something this code can do for you):

@@ -6,11 +6,11 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+from .providers.antigravity_cli import AntigravityCliAgent
 from .providers.base import Agent
 from .providers.claude_code import ClaudeCodeAgent
 from .providers.copilot_cli import CopilotCliAgent
 from .providers.gemini import GeminiAgent
-from .providers.gemini_cli import GeminiCliAgent
 from .providers.ollama import OllamaAgent
 from .providers.openai_compat import OpenAICompatAgent
 from .cluster_store import ClusterStore
@@ -51,18 +51,18 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
     else:
         print("! claude CLI not found on PATH - skipping Claude Code agent")
 
-    # Prefer the Gemini CLI (your Google account login - covers a Gemini
+    # Prefer Antigravity CLI (your Google account login - covers a Gemini
     # subscription's included usage, no separate billed API key) over the
-    # API-key-based agent. Falls back to the API key only if the CLI isn't
-    # installed but GEMINI_API_KEY is set.
-    if shutil.which("gemini"):
+    # API-key-based agent. This replaced the old `gemini` CLI on 2026-06-18 -
+    # Google cut individual/free/Pro/Ultra accounts over entirely; the old
+    # CLI now hard-fails with IneligibleTierError for everyone but enterprise
+    # API-key accounts. Falls back to GEMINI_API_KEY only if `agy` isn't installed.
+    if shutil.which("agy"):
         try:
-            planners.append(GeminiCliAgent(name="gemini", tier="planner"))
-            # gemini-flash-latest is Google's own rolling alias for their
-            # current fast/cheap Flash model - same reasoning as "haiku" above.
-            cloud_fast.append(GeminiCliAgent(name="gemini-flash", tier="cloud-fast", model="gemini-flash-latest"))
+            planners.append(AntigravityCliAgent(name="gemini", tier="planner"))
+            cloud_fast.append(AntigravityCliAgent(name="gemini-flash", tier="cloud-fast", effort="low"))
         except Exception as e:
-            print(f"! Gemini CLI agent unavailable - {e}")
+            print(f"! Antigravity CLI agent unavailable - {e}")
     elif os.environ.get("GEMINI_API_KEY"):
         try:
             planners.append(GeminiAgent(name="gemini", tier="planner"))
@@ -70,8 +70,9 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
             print(f"! Gemini agent unavailable - {e}")
     else:
         print(
-            "! No Gemini access - either `npm install -g @google/gemini-cli` and log in "
-            "with your Google account (no key needed), or set GEMINI_API_KEY in .env"
+            "! No Gemini access - either install Antigravity CLI (Windows: "
+            "irm https://antigravity.google/cli/install.ps1 | iex) and log in with your "
+            "Google account (no key needed), or set GEMINI_API_KEY in .env"
         )
 
     if shutil.which("copilot"):
@@ -138,7 +139,7 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
     if not planners:
         raise RuntimeError(
             "No planner-tier agent available. Set up the Claude Code CLI "
-            "(`claude` on PATH, logged in) and/or the Gemini CLI / GEMINI_API_KEY."
+            "(`claude` on PATH, logged in) and/or Antigravity CLI / GEMINI_API_KEY."
         )
 
     return Fleet(planners=planners, cloud_fast=cloud_fast, local_hard=local_hard, cloud=cloud, local=local)
