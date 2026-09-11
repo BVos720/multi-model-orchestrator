@@ -42,7 +42,7 @@ def default_registry() -> HookRegistry:
     registry = HookRegistry()
 
     async def flag_thin_output(step_description: str, tier: str, output: str) -> str:
-        if tier in ("local", "cloud-fast") and len(output.strip()) < 10:
+        if tier in ("local", "cloud-fast", "cloud-hard") and len(output.strip()) < 10:
             return f"[ORCHESTRATOR_ESCALATE: {tier} output too thin] original: {output!r}"
         return output
 

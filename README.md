@@ -140,13 +140,77 @@ shared WiFi with other people), put [Caddy](https://caddyserver.com) or
 checks a shared-secret header - Ollama itself won't do that for you, and a
 direct cable/Tailscale alone assumes only your two PCs are on that link.
 
+## Running a big model across two PCs (hard tasks, no API needed)
+
+For genuinely hard steps, `route_step` normally escalates to your planner
+(Claude Code / Gemini). If you'd rather try a bigger *local* model first -
+one too large to fit either machine's VRAM alone - `llama.cpp` (the engine
+Ollama itself is built on, but not Ollama's own feature) supports splitting
+one model's layers across multiple machines over its RPC backend. This is a
+different, separate toolchain from Ollama - you build/run it independently,
+then just point the orchestrator at it.
+
+**Honest expectations first, from what's actually documented about this
+(not something I've personally run end-to-end on your two PCs - I only
+have access to one machine here):**
+- It pools *memory*, not speed - "not designed to make inference faster by
+  parallelizing computation," per llama.cpp's own docs. Inference is
+  sequential across the layer split, so the cluster runs at the speed of
+  its slowest hop plus network latency, not the sum of your GPUs.
+- **WiFi can cut throughput 10x.** Use the direct Ethernet cable from
+  "Networking two PCs" above, not WiFi, or this won't be worth it.
+- A CPU-only machine *can* join as a worker (`rpc-server` supports any
+  backend including plain CPU) - but give it a small `--tensor-split`
+  share, not an equal one, since it'll otherwise become the bottleneck.
+- **No built-in auth** - same rule as Ollama: direct cable or Tailscale
+  only, never expose the RPC port to the open internet.
+- The sweet spot is "a model that simply won't fit otherwise, even if slow"
+  - compare its actual tokens/sec against your `cloud-fast` tier before
+    making it your default for hard tasks; it may not win.
+
+**Setup** (once per machine that'll run it - separate from Ollama/Python setup):
+
+1. Build llama.cpp with RPC support on every machine involved:
+   ```
+   git clone https://github.com/ggml-org/llama.cpp
+   cmake -B build -DGGML_RPC=ON            # add -DGGML_CUDA=ON on a machine with an Nvidia GPU
+   cmake --build build --config Release -j
+   ```
+2. On the **worker** machine(s) (e.g. your desktop, or a spare CPU-only
+   laptop), start the RPC server - it exposes that machine's backend
+   (GPU if built with CUDA, else CPU) on port 50052 by default:
+   ```
+   build/bin/rpc-server -p 50052
+   ```
+3. Get a GGUF model sized for your machines' *combined* memory (not just
+   one) - e.g. a 32B or 70B model at Q4 quantization, from Hugging Face.
+4. On the **master** machine (wherever you'll run `orchestrator` from),
+   start `llama-server`, pointing it at every worker:
+   ```
+   build/bin/llama-server --rpc <worker-ip>:50052 -m path\to\model.gguf --host 0.0.0.0 --port 8080
+   ```
+   (repeat `--rpc host:port` for more workers; this machine's own GPU/CPU
+   is used automatically alongside the remote ones.)
+5. Register it with the orchestrator - `llama-server` speaks the same
+   OpenAI-compatible API our custom-provider code already knows, so no new
+   code is needed, just:
+   ```
+   orchestrator settings add-cluster big-llama --url http://localhost:8080/v1 --model <name from llama-server>
+   ```
+
+Hard-complexity steps now try `big-llama` first - free, no API cost -
+before falling back to your planner. `orchestrator settings clusters` /
+`remove-cluster` manage it; the menu has the same under Settings.
+
 ## Providers
 
 | Provider | Tier | Needs | Notes |
 |---|---|---|---|
 | `claude-code` | planner | `claude` CLI on PATH, logged in | Shells out to `claude -p`, runs with `--permission-mode plan` and every mutating tool disallowed - it only ever generates text here, never edits files itself. |
 | `gemini` | planner | `gemini` CLI logged in (or `GEMINI_API_KEY`) | Prefers the free Google-account-login CLI over a billed API key. |
-| custom (OpenAI-compatible) | cloud/planner | an API key via `orchestrator settings add <name>` | DeepSeek, Groq, OpenRouter, Cerebras, Mistral, OpenAI, or any other OpenAI-compatible endpoint. This is the "some other model" slot. |
+| `copilot` | planner | `copilot` CLI logged in | GitHub account login, needs a Copilot plan - no separate key. |
+| custom (OpenAI-compatible) | cloud/cloud-fast/planner | an API key via `orchestrator settings add <name>` | DeepSeek, Groq, OpenRouter, Cerebras, Mistral, OpenAI, or any other OpenAI-compatible endpoint. Multiple accounts per provider pool with weighted rotation (`settings add-account`). |
+| llama.cpp RPC cluster | local-hard | a cluster you build/run yourself, see above | Free, no API cost - hard steps try this before the planner. |
 | `ollama` | local | Ollama running, model pulled | Free, local, pooled across registered hosts (`orchestrator settings add-host`). |
 
 Add another provider by implementing `Agent` in `src/orchestrator/providers/`

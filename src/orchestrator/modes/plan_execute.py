@@ -65,6 +65,21 @@ async def _complete(agent, prompt: str, decision, fleet: Fleet) -> str:
     return await agent.complete(prompt, system=STEP_SYSTEM)
 
 
+def _first_choice(decision_tier: str, fleet: Fleet, planner) -> tuple:
+    """Map a routing decision to (agent, dispatch_tier). dispatch_tier is
+    finer than decision_tier - it's the only thing that distinguishes a
+    free local-hard cluster answer from a real planner answer, since both
+    can serve decision_tier == "cloud" (the cluster is tried first, no
+    subscription/API cost, before spending the planner's budget)."""
+    if decision_tier == "local" and fleet.local:
+        return fleet.local, "local"
+    if decision_tier == "cloud-fast" and fleet.cloud_fast:
+        return fleet.cloud_fast[0], "cloud-fast"
+    if decision_tier == "cloud" and fleet.local_hard:
+        return fleet.local_hard[0], "cloud-hard"
+    return planner, "cloud"
+
+
 async def run(
     task: str,
     fleet: Fleet,
@@ -120,12 +135,7 @@ async def run(
 
         await hooks.run_pre_step(desc)
 
-        if decision.tier == "local" and fleet.local:
-            agent = fleet.local
-        elif decision.tier == "cloud-fast" and fleet.cloud_fast:
-            agent = fleet.cloud_fast[0]
-        else:
-            agent = planner
+        agent, dispatch_tier = _first_choice(decision.tier, fleet, planner)
         # "fallback" = we wanted a cheaper tier but had to use the strong
         # planner anyway because that tier isn't configured (distinct from
         # an *escalation*, which happens below on failure/thin output).
@@ -148,13 +158,13 @@ async def run(
                 tasks.save(task_run)
                 raise
 
-        result = await hooks.run_post_step(desc, decision.tier, result)
+        result = await hooks.run_post_step(desc, dispatch_tier, result)
         if "ORCHESTRATOR_ESCALATE" in result and agent is not planner:
             agent = planner
             result = await _complete(agent, step_prompt, decision, fleet)
             used_fallback = True
 
-        tag = f"{decision.tier}{'->escalated' if used_fallback else ''}"
+        tag = f"{dispatch_tier}{'->escalated' if used_fallback else ''}"
         store.add(agent.name, f"step-{i}:{tag}", result)
 
         item.status = "escalated" if used_fallback else "done"

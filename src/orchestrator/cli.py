@@ -18,6 +18,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from .actions import add_account, resolve_agent, save_first_account, save_gemini_key
+from .cluster_store import ClusterConfig, ClusterStore
 from .config import build_fleet
 from .context_store import ContextStore
 from .env_store import set_env_var
@@ -121,6 +122,7 @@ def status():
     fleet = build_fleet()
     click.echo(f"Planners: {[a.name for a in fleet.planners]}")
     click.echo(f"Cloud-fast: {[a.name for a in fleet.cloud_fast]}")
+    click.echo(f"Local-hard: {[a.name for a in fleet.local_hard]} (free RPC cluster(s) - hard steps before spending planner budget)")
     click.echo(f"Cloud:    {[a.name for a in fleet.cloud]}")
     click.echo(f"Local:    {fleet.local.name + ' ' + str([h.name for h in fleet.local.hosts]) if fleet.local else 'none'}")
     click.echo(f"Bias:     {os.environ.get('LOCAL_BIAS', str(DEFAULT_BIAS))}/10 (0=max cloud precision, 10=max local savings)")
@@ -161,6 +163,9 @@ def settings_list():
     else:
         legacy = os.environ.get("OLLAMA_HOSTS") or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         click.echo(f"  {'ollama':12} no named hosts registered, using env default: {legacy}")
+
+    clusters = ClusterStore().load()
+    click.echo(f"  {'cluster(s)':12} {len(clusters)} registered - see `orchestrator settings clusters`" if clusters else f"  {'cluster(s)':12} none - see README \"Running a big model across two PCs\"")
 
     click.echo("\nCustom (OpenAI-compatible) agents:")
     custom = SettingsStore().load()
@@ -342,6 +347,44 @@ def settings_remove_host(name: str):
         click.echo(f"Removed host '{name}'.")
     else:
         click.echo(f"No host named '{name}'.")
+
+
+@settings.command("add-cluster")
+@click.argument("name")
+@click.option("--url", required=True, help="llama-server's OpenAI-compatible endpoint, e.g. http://localhost:8080/v1")
+@click.option("--model", required=True, help="Model name llama-server reports (see its /v1/models, or just the gguf filename).")
+def settings_add_cluster(name: str, url: str, model: str):
+    """Register a llama.cpp RPC cluster (a big model split across 2+ PCs) -
+    see README "Running a big model across two PCs" to build/run it first.
+
+    orchestrator settings add-cluster big-llama --url http://localhost:8080/v1 --model Qwen2.5-32B-Instruct
+
+    Hard-complexity steps try this (free, no API cost) before falling back
+    to the planner. Not Ollama - this points at a raw llama-server instance.
+    """
+    ClusterStore().add(ClusterConfig(name=name, base_url=url, model=model))
+    click.echo(f"Registered cluster '{name}' -> {model} @ {url}")
+
+
+@settings.command("clusters")
+def settings_clusters():
+    """List registered llama.cpp RPC clusters."""
+    clusters = ClusterStore().load()
+    if not clusters:
+        click.echo("No clusters registered - see README \"Running a big model across two PCs\".")
+        return
+    for c in clusters:
+        click.echo(f"  {c.name:16} {c.model:28} {c.base_url}")
+
+
+@settings.command("remove-cluster")
+@click.argument("name")
+def settings_remove_cluster(name: str):
+    """Unregister a cluster."""
+    if ClusterStore().remove(name):
+        click.echo(f"Removed cluster '{name}'.")
+    else:
+        click.echo(f"No cluster named '{name}'.")
 
 
 if __name__ == "__main__":

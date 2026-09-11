@@ -15,12 +15,19 @@ class ClaudeCodeAgent(Agent):
     generator inside the swarm, it must never edit files on its own.
     """
 
-    def __init__(self, name: str = "claude-code", tier: str = "planner", model: str | None = None):
+    def __init__(
+        self,
+        name: str = "claude-code",
+        tier: str = "planner",
+        model: str | None = None,
+        timeout: float = 180.0,
+    ):
         if shutil.which("claude") is None:
             raise RuntimeError("`claude` CLI not found on PATH. Install/login to Claude Code first.")
         self.name = name
         self.tier = tier
         self.model = model  # e.g. "sonnet", "opus" - alias passed via --model
+        self.timeout = timeout
 
     async def complete(self, prompt: str, system: str | None = None) -> str:
         args = [
@@ -37,10 +44,16 @@ class ClaudeCodeAgent(Agent):
 
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.DEVNULL,  # never let it block waiting on a permission/input prompt
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()  # reap it - avoid leaving a zombie/orphaned process behind
+            raise RuntimeError(f"claude CLI timed out after {self.timeout}s and was killed.")
         if proc.returncode != 0:
             raise RuntimeError(f"claude CLI failed: {stderr.decode(errors='replace')[:2000]}")
         return stdout.decode(errors="replace").strip()

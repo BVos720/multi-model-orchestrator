@@ -8,6 +8,7 @@ import questionary
 
 from .actions import add_account, resolve_agent, save_first_account, save_gemini_key
 from .attachments import save_clipboard_image
+from .cluster_store import ClusterConfig, ClusterStore
 from .config import build_fleet
 from .context_store import ContextStore
 from .env_store import set_env_var
@@ -48,6 +49,7 @@ def _print_status() -> None:
     bias = os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS))
     print(f"Planners: {[a.name for a in fleet.planners]}")
     print(f"Cloud-fast: {[a.name for a in fleet.cloud_fast]}")
+    print(f"Local-hard: {[a.name for a in fleet.local_hard]} (free RPC cluster(s), tried before spending planner budget)")
     print(f"Cloud:    {[a.name for a in fleet.cloud]}")
     print(f"Local:    {local}")
     print(f"Bias:     {bias}/10 (0=max cloud precision, 10=max local savings)")
@@ -101,6 +103,9 @@ def _print_settings_list() -> None:
     else:
         legacy = os.environ.get("OLLAMA_HOSTS") or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         print(f"  {'ollama':12} no named hosts registered, using env default: {legacy}")
+
+    clusters = ClusterStore().load()
+    print(f"  {'cluster(s)':12} {len(clusters)} registered" if clusters else f"  {'cluster(s)':12} none")
 
     print("\nCustom (OpenAI-compatible) agents:")
     custom = SettingsStore().load()
@@ -367,6 +372,49 @@ def _hosts_menu() -> None:
             _pause()
 
 
+def _cluster_menu() -> None:
+    while True:
+        choice = questionary.select(
+            "Hard-task cluster (llama.cpp RPC across 2+ PCs) - see README "
+            '"Running a big model across two PCs" to set the cluster itself up first',
+            choices=["List clusters", "Add a cluster", "Remove a cluster", "Back"],
+            style=STYLE,
+        ).ask()
+        if choice in (None, "Back"):
+            return
+
+        if choice == "List clusters":
+            clusters = ClusterStore().load()
+            if not clusters:
+                print("No clusters registered.")
+            for c in clusters:
+                print(f"  {c.name:16} {c.model:28} {c.base_url}")
+            _pause()
+
+        elif choice == "Add a cluster":
+            name = questionary.text("Cluster name (e.g. big-llama):", style=STYLE).ask()
+            url = questionary.text("llama-server URL (e.g. http://localhost:8080/v1):", style=STYLE).ask()
+            model = questionary.text("Model name llama-server reports:", style=STYLE).ask()
+            if name and url and model:
+                ClusterStore().add(ClusterConfig(name=name, base_url=url, model=model))
+                print(f"Registered '{name}' -> {model} @ {url}")
+            _pause()
+
+        elif choice == "Remove a cluster":
+            clusters = ClusterStore().load()
+            if not clusters:
+                print("No clusters registered.")
+                _pause()
+                continue
+            target = questionary.select(
+                "Remove which cluster?", choices=[c.name for c in clusters] + ["(cancel)"], style=STYLE
+            ).ask()
+            if target and target != "(cancel)":
+                ClusterStore().remove(target)
+                print(f"Removed '{target}'.")
+            _pause()
+
+
 def _settings_menu() -> None:
     while True:
         choice = questionary.select(
@@ -376,6 +424,7 @@ def _settings_menu() -> None:
                 "Add an agent",
                 "Remove an agent",
                 "Manage local machines (Ollama hosts)",
+                "Manage hard-task cluster (llama.cpp RPC)",
                 "Local <-> Cloud balance",
                 "Back",
             ],
@@ -392,6 +441,8 @@ def _settings_menu() -> None:
             _remove_agent_menu()
         elif choice == "Manage local machines (Ollama hosts)":
             _hosts_menu()
+        elif choice == "Manage hard-task cluster (llama.cpp RPC)":
+            _cluster_menu()
         elif choice == "Local <-> Cloud balance":
             _bias_menu()
 

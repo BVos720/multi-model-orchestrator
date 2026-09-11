@@ -13,6 +13,7 @@ from .providers.gemini import GeminiAgent
 from .providers.gemini_cli import GeminiCliAgent
 from .providers.ollama import OllamaAgent
 from .providers.openai_compat import OpenAICompatAgent
+from .cluster_store import ClusterStore
 from .hosts_store import HostsStore
 from .settings_store import SettingsStore
 
@@ -23,6 +24,7 @@ load_dotenv()
 class Fleet:
     planners: list[Agent]        # heavy/default models: write plans, do final review, strong escalations
     cloud_fast: list[Agent]      # cheap+fast variants (haiku, gemini-flash): steps too big for local but not high-stakes
+    local_hard: list[Agent]      # free llama.cpp RPC cluster(s): hard steps, tried before spending planner budget
     cloud: list[Agent]           # custom OpenAI-compatible agents (DeepSeek, Groq, ...): escalated/complex steps
     local: Agent | None          # Ollama pool: cheap/simple steps
 
@@ -33,6 +35,7 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
     (or the legacy single-pool env fallback if none are registered)."""
     planners: list[Agent] = []
     cloud_fast: list[Agent] = []
+    local_hard: list[Agent] = []
     cloud: list[Agent] = []
     local: Agent | None = None
 
@@ -102,6 +105,21 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
         except Exception as e:
             print(f"! {p.name} agent unavailable - {e}")
 
+    for c in ClusterStore().load():
+        try:
+            # llama-server speaks the same OpenAI-compatible wire format our
+            # custom-provider client already knows - no separate class
+            # needed. It ignores the Authorization header by default (no
+            # --api-key on the server side), so this placeholder is fine.
+            local_hard.append(
+                OpenAICompatAgent(
+                    name=c.name, tier="local-hard", base_url=c.base_url, model=c.model,
+                    api_keys=["not-needed"], wait_timeout=5.0,
+                )
+            )
+        except Exception as e:
+            print(f"! cluster '{c.name}' unavailable - {e}")
+
     try:
         registered = HostsStore().load()
         if registered:
@@ -123,4 +141,4 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
             "(`claude` on PATH, logged in) and/or the Gemini CLI / GEMINI_API_KEY."
         )
 
-    return Fleet(planners=planners, cloud_fast=cloud_fast, cloud=cloud, local=local)
+    return Fleet(planners=planners, cloud_fast=cloud_fast, local_hard=local_hard, cloud=cloud, local=local)
