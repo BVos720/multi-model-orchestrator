@@ -7,6 +7,16 @@ import sys
 
 import click
 
+# Cloud-model output routinely contains characters (→, em dashes, checkmarks)
+# that Windows' legacy console codepage (cp1252) can't encode - reconfigure
+# to UTF-8 so `orchestrator run` doesn't crash printing a perfectly normal
+# review. Python 3.7+; a no-op on platforms where this isn't needed/possible.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from .actions import add_account, resolve_agent, save_first_account, save_gemini_key
 from .config import build_fleet
 from .context_store import ContextStore
@@ -110,6 +120,7 @@ def status():
     """Show which agents are configured and ready."""
     fleet = build_fleet()
     click.echo(f"Planners: {[a.name for a in fleet.planners]}")
+    click.echo(f"Cloud-fast: {[a.name for a in fleet.cloud_fast]}")
     click.echo(f"Cloud:    {[a.name for a in fleet.cloud]}")
     click.echo(f"Local:    {fleet.local.name + ' ' + str([h.name for h in fleet.local.hosts]) if fleet.local else 'none'}")
     click.echo(f"Bias:     {os.environ.get('LOCAL_BIAS', str(DEFAULT_BIAS))}/10 (0=max cloud precision, 10=max local savings)")
@@ -210,7 +221,7 @@ def settings_presets():
 )
 @click.option("--base-url", default=None, help="Required with --preset custom.")
 @click.option("--model", default=None, help="Required with --preset custom.")
-@click.option("--tier", type=click.Choice(["planner", "cloud", "local"]), default=None)
+@click.option("--tier", type=click.Choice(["planner", "cloud-fast", "cloud", "local"]), default=None)
 @click.option("--label", default="default", help="Account label, if you'll add more accounts for this provider later.")
 def settings_add(name: str, preset: str | None, base_url: str | None, model: str | None, tier: str | None, label: str):
     """Add a new agent (its first account), e.g.: orchestrator settings add deepseek

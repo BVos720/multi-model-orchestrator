@@ -26,10 +26,13 @@ def test_short_step_defaults_local():
     assert decision.tier == "local"
 
 
-def test_ambiguous_long_step_defaults_cloud():
+def test_ambiguous_long_step_tries_cloud_fast_first():
+    # too long for local, but nothing flags real complexity either - this
+    # is the "some tasks only need haiku/flash" middle tier, not a full
+    # escalation to the strong/default model.
     long_desc = " ".join(["word"] * 40)
     decision = route_step(long_desc)
-    assert decision.tier == "cloud"
+    assert decision.tier == "cloud-fast"
 
 
 def test_bias_zero_forces_cloud_even_for_declared_low():
@@ -58,8 +61,13 @@ def test_security_step_escalates_regardless_of_bias():
 
 def test_higher_bias_widens_the_simple_word_threshold():
     medium_desc = " ".join(["word"] * 30)  # over the default threshold (25), under a high-bias one
-    assert route_step(medium_desc, local_bias=5).tier == "cloud"
+    assert route_step(medium_desc, local_bias=5).tier == "cloud-fast"
     assert route_step(medium_desc, local_bias=8).tier == "local"
+
+
+def test_declared_high_with_no_keyword_still_escalates_to_strong_cloud():
+    decision = route_step("Reorganize this in a reasonable way", declared_complexity="high")
+    assert decision.tier == "cloud"
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ def _print_status() -> None:
     local = fleet.local.name + " " + str([h.name for h in fleet.local.hosts]) if fleet.local else "none"
     bias = os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS))
     print(f"Planners: {[a.name for a in fleet.planners]}")
+    print(f"Cloud-fast: {[a.name for a in fleet.cloud_fast]}")
     print(f"Cloud:    {[a.name for a in fleet.cloud]}")
     print(f"Local:    {local}")
     print(f"Bias:     {bias}/10 (0=max cloud precision, 10=max local savings)")
@@ -224,7 +225,7 @@ def _add_agent_menu() -> None:
         name = questionary.text("Agent name:", style=STYLE).ask()
         base_url = questionary.text("Base URL (OpenAI-compatible):", style=STYLE).ask()
         model = questionary.text("Model id:", style=STYLE).ask()
-        tier = questionary.select("Tier:", choices=["cloud", "planner", "local"], style=STYLE).ask()
+        tier = questionary.select("Tier:", choices=["cloud", "cloud-fast", "planner", "local"], style=STYLE).ask()
         preset = "custom"
         if not (name and base_url and model and tier):
             return

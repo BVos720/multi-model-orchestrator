@@ -14,7 +14,7 @@ COMPLEX_HINTS = (
 
 @dataclass
 class RoutingDecision:
-    tier: str  # "local" | "cloud"
+    tier: str  # "local" | "cloud-fast" | "cloud"
     reason: str
 
 
@@ -62,14 +62,13 @@ def route_step(
             return RoutingDecision("cloud", f"bias={local_bias}: matched complexity keyword, still escalating")
         return RoutingDecision("local", f"bias={local_bias}: max-savings - try local by default")
 
-    if declared_complexity == "high":
-        return RoutingDecision("cloud", "planner flagged this step high-complexity")
-    if declared_complexity == "low":
-        return RoutingDecision("local", "planner flagged this step low-complexity")
-
-    if hit_complex:
-        return RoutingDecision("cloud", "matched complexity keyword")
-    if hit_simple or words <= word_threshold:
+    if declared_complexity == "high" or hit_complex:
+        return RoutingDecision("cloud", "high-complexity step - needs the strong/default model")
+    if declared_complexity == "low" or hit_simple or words <= word_threshold:
         return RoutingDecision("local", f"short/simple step (<= {word_threshold} words, bias={local_bias})")
 
-    return RoutingDecision("cloud", f"default: ambiguous size, escalate (bias={local_bias})")
+    # Not simple enough for local, but nothing flags it as needing real
+    # judgment either - this is the "some tasks only need haiku/flash"
+    # middle tier. plan_execute falls back to the strong model if no
+    # cloud-fast agent is actually configured.
+    return RoutingDecision("cloud-fast", f"ambiguous size - try the fast/cheap cloud model (bias={local_bias})")

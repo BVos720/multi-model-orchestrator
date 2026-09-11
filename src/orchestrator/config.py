@@ -21,9 +21,10 @@ load_dotenv()
 
 @dataclass
 class Fleet:
-    planners: list[Agent]  # heavy models: write plans, do final review
-    cloud: list[Agent]     # mid-weight paid models: escalated/complex steps
-    local: Agent | None    # Ollama pool: cheap/simple steps
+    planners: list[Agent]        # heavy/default models: write plans, do final review, strong escalations
+    cloud_fast: list[Agent]      # cheap+fast variants (haiku, gemini-flash): steps too big for local but not high-stakes
+    cloud: list[Agent]           # custom OpenAI-compatible agents (DeepSeek, Groq, ...): escalated/complex steps
+    local: Agent | None          # Ollama pool: cheap/simple steps
 
 
 def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
@@ -31,11 +32,19 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
     restrict this run's local tier to. None = use every registered host
     (or the legacy single-pool env fallback if none are registered)."""
     planners: list[Agent] = []
+    cloud_fast: list[Agent] = []
     cloud: list[Agent] = []
     local: Agent | None = None
 
     if shutil.which("claude"):
         planners.append(ClaudeCodeAgent(name="claude-code", tier="planner"))
+        try:
+            # "haiku" is a rolling alias Claude Code resolves to its own
+            # current fast/cheap model - not pinned here, so this stays
+            # correct as Anthropic ships new Haiku releases.
+            cloud_fast.append(ClaudeCodeAgent(name="claude-code-haiku", tier="cloud-fast", model="haiku"))
+        except Exception as e:
+            print(f"! claude-code-haiku (fast tier) unavailable - {e}")
     else:
         print("! claude CLI not found on PATH - skipping Claude Code agent")
 
@@ -46,6 +55,9 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
     if shutil.which("gemini"):
         try:
             planners.append(GeminiCliAgent(name="gemini", tier="planner"))
+            # gemini-flash-latest is Google's own rolling alias for their
+            # current fast/cheap Flash model - same reasoning as "haiku" above.
+            cloud_fast.append(GeminiCliAgent(name="gemini-flash", tier="cloud-fast", model="gemini-flash-latest"))
         except Exception as e:
             print(f"! Gemini CLI agent unavailable - {e}")
     elif os.environ.get("GEMINI_API_KEY"):
@@ -80,7 +92,8 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
             print(f"! {p.name}: {missing} account(s) missing their key, pooling the other {len(keys)}")
         try:
             agent = OpenAICompatAgent(name=p.name, tier=p.tier, base_url=p.base_url, model=p.model, api_keys=keys)
-            (planners if p.tier == "planner" else cloud).append(agent)
+            target = {"planner": planners, "cloud-fast": cloud_fast}.get(p.tier, cloud)
+            target.append(agent)
         except Exception as e:
             print(f"! {p.name} agent unavailable - {e}")
 
@@ -105,4 +118,4 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
             "(`claude` on PATH, logged in) and/or the Gemini CLI / GEMINI_API_KEY."
         )
 
-    return Fleet(planners=planners, cloud=cloud, local=local)
+    return Fleet(planners=planners, cloud_fast=cloud_fast, cloud=cloud, local=local)

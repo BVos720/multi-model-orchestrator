@@ -92,8 +92,16 @@ async def run(
 
         await hooks.run_pre_step(desc)
 
-        agent = fleet.local if decision.tier == "local" and fleet.local else planner
-        used_fallback = agent is planner and decision.tier == "local"
+        if decision.tier == "local" and fleet.local:
+            agent = fleet.local
+        elif decision.tier == "cloud-fast" and fleet.cloud_fast:
+            agent = fleet.cloud_fast[0]
+        else:
+            agent = planner
+        # "fallback" = we wanted a cheaper tier but had to use the strong
+        # planner anyway because that tier isn't configured (distinct from
+        # an *escalation*, which happens below on failure/thin output).
+        used_fallback = agent is planner and decision.tier != "cloud"
 
         step_prompt = (
             f"Task: {task}\n\nFull plan: {json.dumps(steps)}\n\n"
