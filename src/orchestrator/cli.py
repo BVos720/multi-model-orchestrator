@@ -120,10 +120,32 @@ def settings_list():
     click.echo("\nCustom (OpenAI-compatible) agents:")
     custom = SettingsStore().load()
     if not custom:
-        click.echo("  (none - try `orchestrator settings add deepseek`)")
+        click.echo("  (none - try `orchestrator settings presets` then `settings add <name>`)")
     for p in custom:
         has_key = "ok" if os.environ.get(p.api_key_env) else "MISSING KEY"
-        click.echo(f"  {p.name:12} model={p.model:30} tier={p.tier:8} key={p.api_key_env} [{has_key}]")
+        free_tag = "free" if PRESETS.get(p.name, {}).get("free") else "paid"
+        click.echo(f"  {p.name:12} model={p.model:32} tier={p.tier:8} [{free_tag}] key={p.api_key_env} [{has_key}]")
+
+
+@settings.command("presets")
+def settings_presets():
+    """List known providers you can `settings add`, with free/paid status."""
+    click.echo("free  name          model                                    signup\n")
+    urls = {
+        "groq": "console.groq.com",
+        "openrouter": "openrouter.ai/keys",
+        "cerebras": "cloud.cerebras.ai",
+        "mistral": "console.mistral.ai",
+        "deepseek": "platform.deepseek.com",
+        "openai": "platform.openai.com",
+    }
+    for name, cfg in sorted(PRESETS.items(), key=lambda kv: not kv[1].get("free")):
+        tag = "YES " if cfg.get("free") else "no  "
+        click.echo(f"{tag}  {name:12}  {cfg['model']:38} {urls.get(name, '')}")
+    click.echo(
+        "\nFree ones need no card and have real (if rate-limited) standing free "
+        "tiers as of writing - see README for sources. `orchestrator settings add <name>`."
+    )
 
 
 @settings.command("add")
@@ -176,7 +198,11 @@ def settings_add(name: str, preset: str | None, base_url: str | None, model: str
             name=name, base_url=resolved_base_url, model=resolved_model, tier=resolved_tier, api_key_env=api_key_env
         )
     )
-    click.echo(f"Added agent '{name}' (model={resolved_model}, tier={resolved_tier}). Key saved to .env as {api_key_env}.")
+    free_note = "free tier" if preset_cfg.get("free") else "paid - billed on your own key"
+    click.echo(
+        f"Added agent '{name}' (model={resolved_model}, tier={resolved_tier}, {free_note}). "
+        f"Key saved to .env as {api_key_env}."
+    )
 
 
 @settings.command("remove")

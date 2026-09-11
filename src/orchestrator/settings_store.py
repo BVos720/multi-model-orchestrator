@@ -8,28 +8,48 @@ PROVIDERS_FILE = Path(".orchestrator") / "providers.json"
 
 # Known OpenAI-compatible providers - `orchestrator settings add <name>` fills
 # base_url/model in from here so you only ever have to supply the API key.
-# None of these have a subscription/OAuth shortcut: they're billed per-call
-# on their own key, separate from any subscription you have elsewhere.
+# None of these have a subscription/OAuth shortcut like Claude Code or the
+# Gemini CLI: they're billed per-call on their own key. "free": True means a
+# genuine standing $0 tier as of writing (no card needed) - not a trial that
+# expires. Sources: https://openrouter.ai/blog/tutorials/free-llm-apis-compared/,
+# https://inference-docs.cerebras.ai/resources/openai, https://docs.mistral.ai
 PRESETS: dict[str, dict] = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
         "tier": "cloud",
+        "free": False,  # cheap, not free - your own key, billed per token
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
         "tier": "cloud",
+        "free": False,
     },
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "model": "llama-3.3-70b-versatile",
         "tier": "cloud",
+        "free": True,  # no card; ~30 RPM / 1,000 RPD; ~320 tok/s on LPU hardware
     },
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1",
-        "model": "meta-llama/llama-3.3-70b-instruct",
+        # the ":free" suffix matters - without it this is a billed model.
+        "model": "meta-llama/llama-3.3-70b-instruct:free",
         "tier": "cloud",
+        "free": True,  # no card; ~20 RPM / 50 RPD across ~20+ ":free" models
+    },
+    "cerebras": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "model": "llama-3.3-70b",
+        "tier": "cloud",
+        "free": True,  # no card; ~30 RPM / ~1M tokens per day, very fast
+    },
+    "mistral": {
+        "base_url": "https://api.mistral.ai/v1",
+        "model": "codestral-latest",  # Mistral's coding model - good fit here
+        "tier": "cloud",
+        "free": True,  # "Experiment" tier, no card, ~1B tokens/month, rate-limited
     },
 }
 
