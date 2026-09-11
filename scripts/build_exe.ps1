@@ -14,7 +14,7 @@ if (-not (Test-Path "$root\.venv")) {
     exit 1
 }
 
-& "$root\.venv\Scripts\pip.exe" install pyinstaller --quiet
+& "$root\.venv\Scripts\pip.exe" install -e "$root[build]" --quiet
 
 & "$root\.venv\Scripts\pyinstaller.exe" `
     --onefile `

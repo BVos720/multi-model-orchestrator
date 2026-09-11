@@ -204,6 +204,23 @@ here cleanly instead:
   the same shape as its per-project memory concept, without the vector-DB
   machinery this project doesn't need.
 
+## Building a standalone .exe
+
+`.venv\Scripts\orchestrator.exe` (created by setup) already runs without
+typing `python`, but it still needs the venv/Python next to it. For a
+single portable .exe that bundles Python and every dependency:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
+```
+
+Output: `dist\orchestrator.exe` (~30MB, built and verified working from a
+clean directory with no venv active). It's still just the *program* -
+config (`.env`, `.orchestrator\`) lives next to wherever you run it from,
+same as the pip-installed version. Copy `.env.example` to `.env` beside the
+`.exe` to get started, or drop the `.exe` into an existing project folder
+that already has one.
+
 ## Project layout
 
 ```

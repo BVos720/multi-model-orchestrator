@@ -12,6 +12,9 @@ dependencies = [
     "Pillow>=10.0",
 ]
 
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
 [project.scripts]
 orchestrator = "orchestrator.cli:main"
 
