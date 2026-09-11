@@ -55,7 +55,7 @@ def resolve_agent(
     )
 
 
-def save_first_account(resolved: ResolvedAgent, label: str, api_key: str) -> str:
+def save_first_account(resolved: ResolvedAgent, label: str, api_key: str, weight: int = 1) -> str:
     """Create the provider entry with its first account. Returns the env var name used."""
     env_var = _account_env_var(resolved.name, label)
     set_env_var(env_var, api_key)
@@ -65,17 +65,17 @@ def save_first_account(resolved: ResolvedAgent, label: str, api_key: str) -> str
             base_url=resolved.base_url,
             model=resolved.model,
             tier=resolved.tier,
-            accounts=[ProviderAccount(label=label, api_key_env=env_var)],
+            accounts=[ProviderAccount(label=label, api_key_env=env_var, weight=weight)],
         )
     )
     return env_var
 
 
-def add_account(name: str, label: str, api_key: str) -> str:
+def add_account(name: str, label: str, api_key: str, weight: int = 1) -> str:
     """Add another account (credential) to an already-registered provider.
     Raises ValueError if `name` isn't registered yet."""
     env_var = _account_env_var(name, label)
-    if not SettingsStore().add_account(name, ProviderAccount(label=label, api_key_env=env_var)):
+    if not SettingsStore().add_account(name, ProviderAccount(label=label, api_key_env=env_var, weight=weight)):
         raise ValueError(f"'{name}' isn't registered yet - add its first account before adding another.")
     set_env_var(env_var, api_key)
     return env_var

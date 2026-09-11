@@ -58,10 +58,19 @@ PRESETS: dict[str, dict] = {
 class ProviderAccount:
     """One credential for a provider. Multiple accounts on the same free
     tier (e.g. two Groq signups) let the pool round-robin/failover between
-    them - each one's own rate limit, combined."""
+    them - each one's own rate limit, combined.
+
+    weight (default 1) controls the ordinary (non-emergency) split between
+    accounts with different quota sizes - an account with weight 10 gets
+    picked ~10x as often as one with weight 1 in normal rotation. A
+    low-weight account isn't excluded, just deprioritized: if every
+    higher-weight account is rate-limited/cooling down, this one still gets
+    used - that's the "unless it's for scaling" exception, not a special
+    case in code, just what falls out of weighted-pick-with-fallback."""
 
     label: str
     api_key_env: str  # name of the .env variable holding this account's key
+    weight: int = 1
 
 
 @dataclass

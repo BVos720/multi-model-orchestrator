@@ -7,6 +7,7 @@ import shutil
 import questionary
 
 from .actions import add_account, resolve_agent, save_first_account, save_gemini_key
+from .attachments import save_clipboard_image
 from .config import build_fleet
 from .context_store import ContextStore
 from .env_store import set_env_var
@@ -110,7 +111,7 @@ def _print_settings_list() -> None:
         print(f"  {p.name:12} model={p.model:32} tier={p.tier:8} [{free_tag}] {len(p.accounts)} account(s):")
         for a in p.accounts:
             has_key = "ok" if os.environ.get(a.api_key_env) else "MISSING KEY"
-            print(f"      {a.label:12} key={a.api_key_env} [{has_key}]")
+            print(f"      {a.label:12} weight={a.weight:<3} key={a.api_key_env} [{has_key}]")
 
 
 def _pick_local_hosts_interactive() -> list[str] | None:
@@ -137,6 +138,29 @@ def _run_task() -> None:
     task = questionary.text("What should the swarm do?", style=STYLE).ask()
     if not task:
         return
+
+    if questionary.confirm(
+        "Attach a screenshot from your clipboard? (screenshot first with Win+Shift+S, "
+        "then say yes here - this reads whatever image is on the clipboard right now)",
+        default=False,
+        style=STYLE,
+    ).ask():
+        try:
+            path = save_clipboard_image()
+        except RuntimeError as e:
+            print(f"! {e}")
+            path = None
+        if path:
+            print(f"Saved {path}")
+            task += (
+                f"\n\n[Attached screenshot: {path}. Whether an agent can actually see this "
+                "depends on its own capabilities - Claude Code can Read image files; a "
+                "text-only local model or a CLI without local-file image support can't, "
+                "and will only see this file path as text.]"
+            )
+        else:
+            print("! Clipboard doesn't currently hold an image - continuing without one.")
+
     max_steps_raw = questionary.text("Max plan steps:", default="12", style=STYLE).ask()
     try:
         max_steps = int(max_steps_raw)
@@ -210,8 +234,17 @@ def _add_agent_menu() -> None:
             print("Cancelled (no key entered).")
             _pause()
             return
+        weight_raw = questionary.text(
+            "Weight vs. this provider's other accounts (higher = picked more often; default 1):",
+            default="1",
+            style=STYLE,
+        ).ask()
         try:
-            env_var = add_account(choice, label, key)
+            weight = int(weight_raw)
+        except (TypeError, ValueError):
+            weight = 1
+        try:
+            env_var = add_account(choice, label, key, weight=weight)
         except ValueError as e:
             print(f"! {e}")
             _pause()

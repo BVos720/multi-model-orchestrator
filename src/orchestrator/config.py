@@ -83,15 +83,20 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
         )
 
     for p in SettingsStore().load():
-        keys = [k for k in (os.environ.get(a.api_key_env) for a in p.accounts) if k]
-        missing = len(p.accounts) - len(keys)
-        if not keys:
+        # keep keys/weights aligned - only accounts that actually have a key set
+        keyed = [(os.environ.get(a.api_key_env), a.weight) for a in p.accounts]
+        keyed = [(k, w) for k, w in keyed if k]
+        missing = len(p.accounts) - len(keyed)
+        if not keyed:
             print(f"! {p.name}: no account has a key set - run `orchestrator settings add {p.name}`")
             continue
         if missing:
-            print(f"! {p.name}: {missing} account(s) missing their key, pooling the other {len(keys)}")
+            print(f"! {p.name}: {missing} account(s) missing their key, pooling the other {len(keyed)}")
         try:
-            agent = OpenAICompatAgent(name=p.name, tier=p.tier, base_url=p.base_url, model=p.model, api_keys=keys)
+            agent = OpenAICompatAgent(
+                name=p.name, tier=p.tier, base_url=p.base_url, model=p.model,
+                api_keys=[k for k, _ in keyed], weights=[w for _, w in keyed],
+            )
             target = {"planner": planners, "cloud-fast": cloud_fast}.get(p.tier, cloud)
             target.append(agent)
         except Exception as e:

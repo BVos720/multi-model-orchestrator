@@ -171,7 +171,7 @@ def settings_list():
         click.echo(f"  {p.name:12} model={p.model:32} tier={p.tier:8} [{free_tag}] {len(p.accounts)} account(s):")
         for a in p.accounts:
             has_key = "ok" if os.environ.get(a.api_key_env) else "MISSING KEY"
-            click.echo(f"      {a.label:12} key={a.api_key_env} [{has_key}]")
+            click.echo(f"      {a.label:12} weight={a.weight:<3} key={a.api_key_env} [{has_key}]")
 
 
 @settings.command("bias")
@@ -223,7 +223,8 @@ def settings_presets():
 @click.option("--model", default=None, help="Required with --preset custom.")
 @click.option("--tier", type=click.Choice(["planner", "cloud-fast", "cloud", "local"]), default=None)
 @click.option("--label", default="default", help="Account label, if you'll add more accounts for this provider later.")
-def settings_add(name: str, preset: str | None, base_url: str | None, model: str | None, tier: str | None, label: str):
+@click.option("--weight", default=1, type=int, help="Selection weight vs. other accounts on this provider (higher = picked more often in ordinary rotation).")
+def settings_add(name: str, preset: str | None, base_url: str | None, model: str | None, tier: str | None, label: str, weight: int):
     """Add a new agent (its first account), e.g.: orchestrator settings add deepseek
 
     Already added this provider and want a second account (e.g. two Groq
@@ -266,18 +267,20 @@ def settings_add(name: str, preset: str | None, base_url: str | None, model: str
 @settings.command("add-account")
 @click.argument("name")
 @click.option("--label", required=True, help="A short label for this account, e.g. 'personal', 'acct2'.")
-def settings_add_account(name: str, label: str):
+@click.option("--weight", default=1, type=int, help="Selection weight vs. this provider's other accounts (higher = picked more often in ordinary rotation; a low-weight account still gets used if the higher ones are all rate-limited).")
+def settings_add_account(name: str, label: str, weight: int):
     """Add another account to an already-registered provider, e.g.:
 
     orchestrator settings add-account groq --label personal
-    orchestrator settings add-account groq --label work
+    orchestrator settings add-account groq --label work --weight 5
 
-    Pools the keys: round-robins between accounts and fails over to the
-    next one if an account errors or hits its rate limit.
+    Pools the keys: weighted rotation across accounts, and a 429 (rate
+    limit) takes just that account out of the pool until it cools down -
+    the other accounts keep working in the meantime.
     """
     key = click.prompt(f"API key for '{name}' account '{label}' (input hidden)", hide_input=True)
     try:
-        env_var = add_account(name, label, key)
+        env_var = add_account(name, label, key, weight=weight)
     except ValueError as e:
         raise click.UsageError(str(e))
     click.echo(f"Added account '{label}' to '{name}'. Key saved to .env as {env_var}.")
