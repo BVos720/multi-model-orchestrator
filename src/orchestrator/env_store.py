@@ -10,7 +10,7 @@ def set_env_var(key: str, value: str, path: Path = ENV_FILE) -> None:
     """Set/replace KEY=value in .env, preserving every other line.
 
     Creates .env (seeded from .env.example if present) the first time this
-    is called, so `orchestrator settings add ...` works even before setup.
+    is called, so `orchest settings add ...` works even before setup.
     """
     if path.exists():
         lines = path.read_text(encoding="utf-8").splitlines()

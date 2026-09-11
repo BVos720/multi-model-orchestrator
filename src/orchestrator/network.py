@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
+import os
+import shutil
 import socket
+import subprocess
+from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
+
+# Tailscale's CGNAT range - every device on a tailnet gets a stable IP in
+# here, reachable only over its WireGuard-encrypted, device-authenticated
+# mesh. An address in this range (or a MagicDNS `*.ts.net` name) is already
+# protected; anything else hitting Ollama's auth-less HTTP API is not.
+TAILSCALE_CIDR = ipaddress.ip_network("100.64.0.0/10")
 
 
 def local_ip() -> str:
@@ -23,6 +35,33 @@ def local_ip() -> str:
         s.close()
 
 
+def is_tailscale_address(host: str) -> bool:
+    """True if `host` (an IP or hostname) is already protected by Tailscale -
+    its CGNAT IP range, or a MagicDNS `<machine>.<tailnet>.ts.net` name."""
+    if host.endswith(".ts.net"):
+        return True
+    try:
+        return ipaddress.ip_address(host) in TAILSCALE_CIDR
+    except ValueError:
+        return False
+
+
+def connection_warning(url: str) -> str | None:
+    """Flag a host URL that isn't loopback or Tailscale - Ollama has no
+    built-in auth or TLS, so anything else is plain, unauthenticated HTTP.
+    Returns None for a URL that's already protected (nothing to warn
+    about), otherwise a one-line warning to show the user."""
+    host = urlparse(url).hostname or ""
+    if host in ("localhost", "127.0.0.1", "::1") or is_tailscale_address(host):
+        return None
+    return (
+        f"{host} isn't a Tailscale address - this connection is plain, unencrypted HTTP "
+        "(Ollama has no built-in auth/TLS). Fine on a trusted LAN; never expose it beyond "
+        "that. For real encryption, register this host by its Tailscale IP/MagicDNS name "
+        'instead (see README "Networking two PCs").'
+    )
+
+
 async def ollama_reachable(url: str = "http://localhost:11434") -> bool:
     try:
         async with httpx.AsyncClient(timeout=3) as client:
@@ -30,6 +69,56 @@ async def ollama_reachable(url: str = "http://localhost:11434") -> bool:
             return resp.status_code == 200
     except httpx.HTTPError:
         return False
+
+
+async def list_models(url: str, timeout: float = 5.0) -> list[str]:
+    """Models already pulled on the Ollama instance at `url` - what a model
+    picker should show as "ready now", vs. anything else the user types
+    that `pull_model` would need to fetch first."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(f"{url}/api/tags")
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except (httpx.HTTPError, ValueError):
+        return []
+
+
+async def pull_model(url: str, model: str, on_progress=None) -> bool:
+    """Pull `model` onto the Ollama instance at `url`, via its own
+    /api/pull endpoint - exactly what `ollama pull` does locally, but it
+    works against ANY reachable Ollama instance over plain HTTP, remote
+    workers included, with no SSH/CLI access to that machine needed.
+
+    on_progress, if given, is called with each raw status dict Ollama
+    streams back (a "status" string, plus "completed"/"total" byte counts
+    once the download itself is underway) - use it to render progress.
+    No timeout here: a multi-GB model can take a long time, same as the
+    real `ollama pull` CLI. Returns True once Ollama reports "success",
+    False on any error (bad model name, connection drop, disk full...)."""
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", f"{url}/api/pull", json={"name": model}) as resp:
+                if resp.status_code != 200:
+                    return False
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if on_progress:
+                        on_progress(chunk)
+                    if "error" in chunk:
+                        return False
+                    if chunk.get("status") == "success":
+                        return True
+    except httpx.HTTPError:
+        return False
+    return False
 
 
 async def _tcp_open(ip: str, port: int, timeout: float) -> bool:
@@ -112,3 +201,83 @@ async def scan_for_workers(
 
     results = await asyncio.gather(*[_check_ollama(ip) for ip in open_ips])
     return [r for r in results if r]
+
+
+async def scan_tailscale_peers(port: int = 11434, timeout: float = 0.5) -> list[dict]:
+    """Ask the local Tailscale daemon for its own peer list instead of
+    brute-forcing a subnet - `tailscale status --json` already knows every
+    device on the tailnet and its stable 100.x IP, regardless of what LAN
+    (if any) that device is actually sitting on. Each peer is then probed
+    the same way as `scan_for_workers` (same dict shape back). Returns []
+    if the `tailscale` CLI isn't installed or isn't logged in/running -
+    this is an alternative discovery source, not a requirement."""
+    cli = shutil.which("tailscale")
+    if not cli:
+        return []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cli, "status", "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        data = json.loads(stdout)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    peers = data.get("Peer") or {}
+    ips: list[str] = []
+    for peer in peers.values():
+        for addr in peer.get("TailscaleIPs") or []:
+            try:
+                if ipaddress.ip_address(addr).version == 4:
+                    ips.append(addr)
+            except ValueError:
+                continue
+
+    sem = asyncio.Semaphore(32)
+
+    async def _probe(ip: str) -> dict | None:
+        async with sem:
+            return await probe_ollama(ip, port=port, timeout=timeout)
+
+    results = await asyncio.gather(*[_probe(ip) for ip in ips])
+    return [r for r in results if r]
+
+
+def ollama_log_path() -> Path:
+    """Where Ollama's own log lives on Windows. It already carries both
+    what you'd want a "networking log" for (a `[GIN] ... 200 ... 127.0.0.1
+    | GET "/api/tags"` line per incoming HTTP request - method, status,
+    source IP, timing) and general server/model activity, so tailing this
+    one file covers both without needing to parse anything ourselves."""
+    return Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama" / "server.log"
+
+
+def open_ollama_log_window() -> bool:
+    """Pop open a separate, live-updating console window tailing Ollama's
+    log - so right after registering this machine as a worker, you can
+    watch requests actually arrive from the supervisor (or not) in real
+    time, instead of guessing whether a connection got through.
+
+    Windows-only (this project's whole worker-networking story already
+    is); returns False there or if nothing's been logged yet (Ollama
+    hasn't run), rather than opening an empty/erroring window."""
+    if os.name != "nt":
+        return False
+    log_path = ollama_log_path()
+    if not log_path.exists():
+        return False
+    title = "Ollama logs (live) - close this window to stop watching"
+    command = (
+        f"$Host.UI.RawUI.WindowTitle = '{title}'; "
+        f"Get-Content -Path '{log_path}' -Wait -Tail 40"
+    )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoExit", "-Command", command],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        return True
+    except OSError:
+        return False

@@ -92,7 +92,7 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
         keyed = [(k, w) for k, w in keyed if k]
         missing = len(p.accounts) - len(keyed)
         if not keyed:
-            print(f"! {p.name}: no account has a key set - run `orchestrator settings add {p.name}`")
+            print(f"! {p.name}: no account has a key set - run `orchest settings add {p.name}`")
             continue
         if missing:
             print(f"! {p.name}: {missing} account(s) missing their key, pooling the other {len(keyed)}")

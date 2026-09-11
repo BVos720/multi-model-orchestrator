@@ -9,7 +9,7 @@ import click
 
 # Cloud-model output routinely contains characters (→, em dashes, checkmarks)
 # that Windows' legacy console codepage (cp1252) can't encode - reconfigure
-# to UTF-8 so `orchestrator run` doesn't crash printing a perfectly normal
+# to UTF-8 so `orchest run` doesn't crash printing a perfectly normal
 # review. Python 3.7+; a no-op on platforms where this isn't needed/possible.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -46,7 +46,7 @@ def main(ctx: click.Context):
 
 @main.command()
 def menu():
-    """Launch the interactive menu (same as running `orchestrator` with no arguments)."""
+    """Launch the interactive menu (same as running `orchest` with no arguments)."""
     main_menu()
 
 
@@ -141,7 +141,7 @@ def tasks():
     """Show the task list (plan) from the current/last run, with live status per step."""
     task_run = TaskListStore().load()
     if not task_run:
-        click.echo("No task list yet - run `orchestrator run \"...\"` first.")
+        click.echo("No task list yet - run `orchest run \"...\"` first.")
         return
     click.echo(render(task_run))
     click.echo("\n(finished)" if task_run.finished else "\n(in progress or interrupted)")
@@ -194,26 +194,26 @@ def settings_list():
     elif os.environ.get("GEMINI_API_KEY"):
         click.echo(f"  {'gemini':12} ok (GEMINI_API_KEY)")
     else:
-        click.echo(f"  {'gemini':12} not configured - see `orchestrator settings add gemini`")
+        click.echo(f"  {'gemini':12} not configured - see `orchest settings add gemini`")
     if shutil.which("copilot"):
         click.echo(f"  {'copilot':12} ok (GitHub account login via copilot CLI)")
     else:
-        click.echo(f"  {'copilot':12} not installed - see `orchestrator settings add copilot`")
+        click.echo(f"  {'copilot':12} not installed - see `orchest settings add copilot`")
 
     hosts = HostsStore().load()
     if hosts:
-        click.echo(f"  {'ollama':12} {len(hosts)} registered host(s) - see `orchestrator settings hosts`")
+        click.echo(f"  {'ollama':12} {len(hosts)} registered host(s) - see `orchest settings hosts`")
     else:
         legacy = os.environ.get("OLLAMA_HOSTS") or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         click.echo(f"  {'ollama':12} no named hosts registered, using env default: {legacy}")
 
     clusters = ClusterStore().load()
-    click.echo(f"  {'cluster(s)':12} {len(clusters)} registered - see `orchestrator settings clusters`" if clusters else f"  {'cluster(s)':12} none - see README \"Running a big model across two PCs\"")
+    click.echo(f"  {'cluster(s)':12} {len(clusters)} registered - see `orchest settings clusters`" if clusters else f"  {'cluster(s)':12} none - see README \"Running a big model across two PCs\"")
 
     click.echo("\nCustom (OpenAI-compatible) agents:")
     custom = SettingsStore().load()
     if not custom:
-        click.echo("  (none - try `orchestrator settings presets` then `settings add <name>`)")
+        click.echo("  (none - try `orchest settings presets` then `settings add <name>`)")
     for p in custom:
         free_tag = "free" if PRESETS.get(p.name, {}).get("free") else "paid"
         click.echo(f"  {p.name:12} model={p.model:32} tier={p.tier:8} [{free_tag}] {len(p.accounts)} account(s):")
@@ -226,7 +226,7 @@ def settings_list():
 @click.argument("level", type=click.IntRange(0, 10), required=False)
 def settings_bias(level: int | None):
     """Show, or persist, the local<->cloud balance (0=always escalate to
-    cloud, 10=always try local first). `orchestrator run --bias N` overrides
+    cloud, 10=always try local first). `orchest run --bias N` overrides
     this for a single run without changing the saved default."""
     if level is None:
         current = os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS))
@@ -253,8 +253,8 @@ def settings_presets():
         click.echo(f"{tag}  {name:12}  {cfg['model']:38} {urls.get(name, '')}")
     click.echo(
         "\nFree ones need no card and have real (if rate-limited) standing free "
-        "tiers as of writing - see README for sources. `orchestrator settings add <name>`.\n"
-        "Have more than one account for a provider? `orchestrator settings add-account <name>` "
+        "tiers as of writing - see README for sources. `orchest settings add <name>`.\n"
+        "Have more than one account for a provider? `orchest settings add-account <name>` "
         "pools them - round-robin, failover on rate limits."
     )
 
@@ -273,7 +273,7 @@ def settings_presets():
 @click.option("--label", default="default", help="Account label, if you'll add more accounts for this provider later.")
 @click.option("--weight", default=1, type=int, help="Selection weight vs. other accounts on this provider (higher = picked more often in ordinary rotation).")
 def settings_add(name: str, preset: str | None, base_url: str | None, model: str | None, tier: str | None, label: str, weight: int):
-    """Add a new agent (its first account), e.g.: orchestrator settings add deepseek
+    """Add a new agent (its first account), e.g.: orchest settings add deepseek
 
     Already added this provider and want a second account (e.g. two Groq
     signups, to pool their rate limits)? Use `settings add-account` instead.
@@ -304,7 +304,7 @@ def settings_add(name: str, preset: str | None, base_url: str | None, model: str
 
     if SettingsStore().get(name):
         raise click.UsageError(
-            f"'{name}' is already registered. Use `orchestrator settings add-account {name}` "
+            f"'{name}' is already registered. Use `orchest settings add-account {name}` "
             f"to add another account to it instead."
         )
 
@@ -329,8 +329,8 @@ def settings_add(name: str, preset: str | None, base_url: str | None, model: str
 def settings_add_account(name: str, label: str, weight: int):
     """Add another account to an already-registered provider, e.g.:
 
-    orchestrator settings add-account groq --label personal
-    orchestrator settings add-account groq --label work --weight 5
+    orchest settings add-account groq --label personal
+    orchest settings add-account groq --label work --weight 5
 
     Pools the keys: weighted rotation across accounts, and a 429 (rate
     limit) takes just that account out of the pool until it cools down -
@@ -361,6 +361,25 @@ def settings_remove(name: str, label: str | None):
         click.echo(f"No custom agent named '{name}'.")
 
 
+def _pull_model_with_progress(url: str, model: str) -> bool:
+    """Pull `model` on the Ollama instance at `url`, rendering
+    network.pull_model's progress as one self-overwriting line - plain
+    \\r, no ANSI needed, so it's safe on any Windows console."""
+
+    def _on_progress(chunk: dict) -> None:
+        status = chunk.get("status", "")
+        total = chunk.get("total")
+        completed = chunk.get("completed")
+        if total and completed:
+            print(f"\r  {status}: {completed / total * 100:5.1f}%   ", end="", flush=True)
+        else:
+            print(f"\r  {status}" + " " * 20, end="", flush=True)
+
+    ok = asyncio.run(network.pull_model(url, model, on_progress=_on_progress))
+    print()
+    return ok
+
+
 @settings.command("add-host")
 @click.argument("name")
 @click.option("--url", required=True, help="e.g. http://localhost:11434 or a Tailscale IP for a remote PC.")
@@ -369,27 +388,72 @@ def settings_remove(name: str, label: str | None):
 def settings_add_host(name: str, url: str, model: str, size: str):
     """Register a machine running Ollama, e.g.:
 
-    orchestrator settings add-host laptop --url http://localhost:11434 --model qwen2.5-coder:7b
+    orchest settings add-host laptop --url http://localhost:11434 --model qwen2.5-coder:7b
 
     Register the SAME machine twice (same --url) with different --model/
     --size to let it serve both a fast small model and a stronger big one:
 
-    orchestrator settings add-host laptop-small --url http://localhost:11434 --model qwen2.5-coder:1.5b --size small
-    orchestrator settings add-host laptop-big   --url http://localhost:11434 --model qwen2.5-coder:7b   --size big
+    orchest settings add-host laptop-small --url http://localhost:11434 --model qwen2.5-coder:1.5b --size small
+    orchest settings add-host laptop-big   --url http://localhost:11434 --model qwen2.5-coder:7b   --size big
+
+    If --model isn't already pulled on that machine, this pulls it on
+    demand (via Ollama's own /api/pull - no SSH/CLI access to that
+    machine needed) before registering.
     """
+    if asyncio.run(network.ollama_reachable(url)) and model not in asyncio.run(network.list_models(url)):
+        pull_now = not sys.stdin.isatty() or click.confirm(
+            f"'{model}' isn't pulled on {url} yet - pull it now?", default=True
+        )
+        if pull_now:
+            click.echo(f"Pulling '{model}' on {url} (this can take a while for a big model)...")
+            if _pull_model_with_progress(url, model):
+                click.echo(f"'{model}' pulled.")
+            else:
+                click.echo(f"! Pull failed - '{model}' may not be usable on {url} yet.")
+        else:
+            click.echo(f"! Skipping pull - registering anyway, but '{model}' isn't on {url} yet.")
+
     HostsStore().add(HostConfig(name=name, url=url, model=model, size=size))
     click.echo(f"Registered host '{name}' -> {model} @ {url} (size={size})")
+    if asyncio.run(network.ollama_reachable(url)):
+        click.echo(f"Neural handshake complete - '{name}' is online and drift-compatible.")
+    else:
+        click.echo(f"(Not reachable yet at {url} - fine if that worker just isn't up right now.)")
+    warning = network.connection_warning(url)
+    if warning:
+        click.echo(f"! {warning}")
 
 
 @settings.command("hosts")
 def settings_hosts():
-    """List registered Ollama machines."""
+    """List registered Ollama machines, and whether each one's model is
+    actually pulled there right now (a registered-but-not-pulled model
+    will fail the first time a run actually tries to use it)."""
     hosts = HostsStore().load()
     if not hosts:
         click.echo("No hosts registered - using env default (OLLAMA_HOST/OLLAMA_HOSTS/OLLAMA_MODEL).")
         return
+
+    async def _check(url: str) -> tuple[bool, list[str]]:
+        reachable = await network.ollama_reachable(url)
+        models = await network.list_models(url) if reachable else []
+        return reachable, models
+
+    async def _check_all() -> dict[str, tuple[bool, list[str]]]:
+        urls = {h.url for h in hosts}
+        results = await asyncio.gather(*[_check(u) for u in urls])
+        return dict(zip(urls, results))
+
+    status_by_url = asyncio.run(_check_all())
     for h in hosts:
-        click.echo(f"  {h.name:16} {h.model:22} [{h.size:8}] {h.url}")
+        reachable, models = status_by_url.get(h.url, (False, []))
+        if not reachable:
+            tag = "unreachable"
+        elif h.model in models:
+            tag = "installed"
+        else:
+            tag = "NOT installed"
+        click.echo(f"  {h.name:16} {h.model:22} [{h.size:8}] {h.url:28} ({tag})")
 
 
 @settings.command("remove-host")
@@ -419,40 +483,77 @@ def settings_register_worker(model: str, host_name: str | None):
     reachable = asyncio.run(network.ollama_reachable())
 
     click.echo(f"This machine's LAN IP: {ip}")
-    click.echo(f"Ollama on :11434: {'reachable' if reachable else 'NOT reachable - is `ollama serve` running?'}")
+    click.echo(f"Ollama on :11434 (localhost): {'reachable' if reachable else 'NOT reachable - is `ollama serve` running?'}")
+    click.echo(
+        "\nOllama listens on localhost ONLY by default - the supervisor can't reach it "
+        "from another PC unless you set OLLAMA_HOST before starting it here:\n"
+    )
+    click.echo('  $env:OLLAMA_HOST = "0.0.0.0:11434"; ollama serve')
+    click.echo(
+        "\n(Using the Ollama desktop app instead of `ollama serve`? Set OLLAMA_HOST=0.0.0.0 "
+        "as a permanent Windows environment variable and restart the app - it only reads it "
+        "on startup.)"
+    )
     click.echo(
         "\nMake sure this machine and the supervisor PC are on the same network "
         "(direct Ethernet cable or Tailscale - see README \"Networking two PCs\"), "
         "then on the SUPERVISOR, run:\n"
     )
-    click.echo(f"  orchestrator settings add-host {name} --url http://{ip}:11434 --model {model}")
+    click.echo(f"  orchest settings add-host {name} --url http://{ip}:11434 --model {model}")
     click.echo(
         "\nNever port-forward 11434 to the public internet - Ollama has no built-in auth."
     )
+
+    if network.open_ollama_log_window():
+        click.echo(
+            "\nOpened a live Ollama log window - watch it for requests arriving once the "
+            "supervisor registers this machine and starts sending it work."
+        )
+    else:
+        click.echo(
+            f"\n(No live log window - {network.ollama_log_path()} doesn't exist yet. "
+            "Start Ollama at least once, then re-run this command to get one.)"
+        )
 
 
 @settings.command("scan-network")
 @click.option("--port", default=11434, show_default=True, help="Port to probe (Ollama's default).")
 @click.option("--timeout", default=0.5, show_default=True, type=float, help="Per-host probe timeout, in seconds.")
 @click.option("--add/--no-add", default=False, help="Interactively register discovered machines as hosts.")
-def settings_scan_network(port: int, timeout: float, add: bool):
-    """Auto-scan the local network for other PCs running Ollama.
+@click.option(
+    "--tailscale", "via_tailscale", is_flag=True, default=False,
+    help="Ask the local Tailscale daemon for its peer list instead of sweeping the LAN subnet - "
+    "finds workers anywhere on your tailnet (not just this /24), and every match is already "
+    "WireGuard-encrypted, so none of this command's security warnings apply to them.",
+)
+def settings_scan_network(port: int, timeout: float, add: bool, via_tailscale: bool):
+    """Auto-scan the network for other PCs running Ollama.
 
-    Sweeps every address on this machine's /24 subnet in parallel and
-    reports which ones answer like a real Ollama server, along with
-    whatever models they already have pulled - no need to know a worker
-    PC's IP ahead of time. Pass --add to register matches as hosts
-    interactively instead of just listing them.
+    By default sweeps every address on this machine's /24 LAN subnet in
+    parallel and reports which ones answer like a real Ollama server,
+    along with whatever models they already have pulled - no need to know
+    a worker PC's IP ahead of time. Pass --tailscale to discover peers via
+    Tailscale instead (works across subnets, and is already encrypted -
+    see README "Networking two PCs"). Pass --add to register matches as
+    hosts interactively instead of just listing them.
     """
-    ip = network.local_ip()
-    if ip == "127.0.0.1":
-        click.echo("Could not determine this machine's LAN IP - are you connected to a network?")
-        return
-    subnet = ip.rsplit(".", 1)[0] + ".0/24"
-    click.echo(f"Scanning {subnet} for Ollama workers on port {port}...")
-    found = asyncio.run(network.scan_for_workers(port=port, timeout=timeout))
+    if via_tailscale:
+        click.echo("Asking Tailscale for peers, then probing each for Ollama...")
+        found = asyncio.run(network.scan_tailscale_peers(port=port, timeout=max(timeout, 0.5)))
+        if not found and not shutil.which("tailscale"):
+            click.echo("`tailscale` CLI not found - is Tailscale installed and running?")
+            return
+    else:
+        ip = network.local_ip()
+        if ip == "127.0.0.1":
+            click.echo("Could not determine this machine's LAN IP - are you connected to a network?")
+            return
+        subnet = ip.rsplit(".", 1)[0] + ".0/24"
+        click.echo(f"Scanning {subnet} for Ollama workers on port {port}...")
+        found = asyncio.run(network.scan_for_workers(port=port, timeout=timeout))
+
     if not found:
-        click.echo("No Ollama workers found on the local network.")
+        click.echo("No Ollama workers found.")
         return
 
     existing = {h.url for h in HostsStore().load()}
@@ -463,7 +564,7 @@ def settings_scan_network(port: int, timeout: float, add: bool):
 
     if not add:
         click.echo("\nRun again with --add to register these interactively, or:")
-        click.echo("  orchestrator settings add-host <name> --url <url> --model <model>")
+        click.echo("  orchest settings add-host <name> --url <url> --model <model>")
         return
 
     for w in found:
@@ -476,8 +577,21 @@ def settings_scan_network(port: int, timeout: float, add: bool):
         default_model = w["models"][0] if w["models"] else ""
         model = click.prompt("Model to use", default=default_model)
         size = click.prompt("Size", default="standard", type=click.Choice(["small", "standard", "big"]))
+        if model not in w["models"]:
+            if click.confirm(f"'{model}' isn't pulled on {w['url']} yet - pull it now?", default=True):
+                click.echo(f"Pulling '{model}' on {w['url']} (this can take a while for a big model)...")
+                if _pull_model_with_progress(w["url"], model):
+                    click.echo(f"'{model}' pulled.")
+                else:
+                    click.echo(f"! Pull failed - '{model}' may not be usable on {w['url']} yet.")
+            else:
+                click.echo(f"! Skipping pull - registering anyway, but '{model}' isn't on {w['url']} yet.")
         HostsStore().add(HostConfig(name=name, url=w["url"], model=model, size=size))
         click.echo(f"Registered '{name}' -> {model} @ {w['url']} (size={size})")
+        click.echo(f"Neural handshake complete - '{name}' is online and drift-compatible.")
+        warning = network.connection_warning(w["url"])
+        if warning:
+            click.echo(f"! {warning}")
 
 
 @settings.command("add-cluster")
@@ -488,7 +602,7 @@ def settings_add_cluster(name: str, url: str, model: str):
     """Register a llama.cpp RPC cluster (a big model split across 2+ PCs) -
     see README "Running a big model across two PCs" to build/run it first.
 
-    orchestrator settings add-cluster big-llama --url http://localhost:8080/v1 --model Qwen2.5-32B-Instruct
+    orchest settings add-cluster big-llama --url http://localhost:8080/v1 --model Qwen2.5-32B-Instruct
 
     Hard-complexity steps try this (free, no API cost) before falling back
     to the planner. Not Ollama - this points at a raw llama-server instance.

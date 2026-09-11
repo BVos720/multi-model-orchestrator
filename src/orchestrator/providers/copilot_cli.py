@@ -24,11 +24,11 @@ class CopilotCliAgent(Agent):
     it only ever generates text here, mirroring ClaudeCodeAgent's
     --permission-mode plan.
 
-    mode="code" (only used by `orchestrator code`): adds --allow-all-tools
+    mode="code" (only used by `orchest code`): adds --allow-all-tools
     (every tool auto-approved, no per-call confirmation) - coarser than
     Claude Code's Edit/Write-only allowance, since Copilot CLI's flags don't
     confirmedly expose a "files but not shell" split the way disallowedTools
-    does. Documented as such in `orchestrator code`'s help text.
+    does. Documented as such in `orchest code`'s help text.
     """
 
     def __init__(

@@ -15,7 +15,7 @@ class ClaudeCodeAgent(Agent):
     plan with Bash/Edit/Write/NotebookEdit all disallowed - pure text
     generation, it never touches disk.
 
-    mode="code" (only used by `orchestrator code`, never the plan/execute
+    mode="code" (only used by `orchest code`, never the plan/execute
     swarm): allows Edit/Write so it can actually make changes in the
     current directory, via --permission-mode acceptEdits (auto-accepts file
     edits without an interactive prompt - required for headless use). Bash

@@ -6,7 +6,7 @@ from pathlib import Path
 
 PROVIDERS_FILE = Path(".orchestrator") / "providers.json"
 
-# Known OpenAI-compatible providers - `orchestrator settings add <name>` fills
+# Known OpenAI-compatible providers - `orchest settings add <name>` fills
 # base_url/model in from here so you only ever have to supply the API key.
 # None of these have a subscription/OAuth shortcut like Claude Code or the
 # Gemini CLI: they're billed per-call on their own key. "free": True means a
@@ -83,7 +83,7 @@ class ProviderConfig:
 
 
 class SettingsStore:
-    """Custom OpenAI-compatible agents added via `orchestrator settings`.
+    """Custom OpenAI-compatible agents added via `orchest settings`.
 
     Only non-secret metadata lives here (name/base_url/model/tier/which env
     vars hold each account's secret). The actual API keys always go to .env

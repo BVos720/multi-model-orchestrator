@@ -1,6 +1,6 @@
 <#
-  Builds a standalone orchestrator.exe (no Python install needed to run it)
-  via PyInstaller. Output: dist\orchestrator.exe
+  Builds a standalone Orchest.exe (no Python install needed to run it)
+  via PyInstaller. Output: dist\Orchest.exe (also copied as dist\OrchestCLI.exe)
 
   Usage:  powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 #>
@@ -18,7 +18,7 @@ if (-not (Test-Path "$root\.venv")) {
 
 & "$root\.venv\Scripts\pyinstaller.exe" `
     --onefile `
-    --name orchestrator `
+    --name Orchest `
     --paths src `
     --collect-all questionary `
     --collect-all google.genai `
@@ -26,8 +26,8 @@ if (-not (Test-Path "$root\.venv")) {
     scripts\entrypoint.py
 
 $orchestCliPath = Join-Path $root "dist\OrchestCLI.exe"
-Copy-Item "$root\dist\orchestrator.exe" $orchestCliPath -Force
-Write-Host "`nBuilt: $root\dist\orchestrator.exe" -ForegroundColor Cyan
+Copy-Item "$root\dist\Orchest.exe" $orchestCliPath -Force
+Write-Host "`nBuilt: $root\dist\Orchest.exe" -ForegroundColor Cyan
 Write-Host "Also copied as: $orchestCliPath (identical binary, same thing, typed differently)" -ForegroundColor Cyan
 Write-Host "This .exe still needs .env / .orchestrator\ next to wherever you run it from" -ForegroundColor Cyan
 Write-Host "(same as the pip-installed version) - it bundles Python and the dependencies," -ForegroundColor Cyan

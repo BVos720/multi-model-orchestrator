@@ -8,7 +8,7 @@ from ..config import Fleet
 from ..context_store import ContextStore
 from ..hooks import HookRegistry, default_registry
 from ..router import DEFAULT_BIAS, route_step
-from ..task_list_store import TaskItem, TaskListStore, TaskRun, render
+from ..task_list_store import LiveTaskPrinter, TaskItem, TaskListStore, TaskRun
 
 PLAN_SYSTEM = (
     "You are the planning agent in a multi-model coding swarm. Break the "
@@ -104,7 +104,7 @@ async def run(
     persisted, auto-compacted ContextStore so agents can see each other's work.
 
     local_bias (0-10): None reads the persisted default (env LOCAL_BIAS,
-    settable via `orchestrator settings bias` / the menu's balance screen).
+    settable via `orchest settings bias` / the menu's balance screen).
     The plan itself is mirrored into a persisted, live-updated TaskRun
     (.orchestrator/tasks.json) - this *is* the "models keep a task list and
     divide work among themselves" list, printed as a checklist as it runs.
@@ -165,8 +165,8 @@ async def run(
         ],
     )
     tasks.save(task_run)
-    if show_task_list:
-        print(render(task_run))
+    printer = LiveTaskPrinter(show_task_list)
+    printer.show(task_run)
 
     for i, step in enumerate(steps, 1):
         item = task_run.items[i - 1]
@@ -175,8 +175,7 @@ async def run(
         item.tier = decision.tier
         item.status = "running"
         tasks.save(task_run)
-        if show_task_list:
-            print(render(task_run))
+        printer.show(task_run)
 
         await hooks.run_pre_step(desc)
 
@@ -203,6 +202,7 @@ async def run(
             else:
                 item.status = "failed"
                 tasks.save(task_run)
+                printer.show(task_run)
                 raise
 
         result = await hooks.run_post_step(desc, dispatch_tier, result)
@@ -217,8 +217,7 @@ async def run(
         item.assigned_agent = agent.name
         item.result_preview = result[:200]
         tasks.save(task_run)
-        if show_task_list:
-            print(render(task_run))
+        printer.show(task_run)
 
         if fleet.local and store.needs_compaction():
             await store.compact(summarizer=fleet.local)

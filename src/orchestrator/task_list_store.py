@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -74,4 +75,35 @@ def render(run: TaskRun) -> str:
         elif item.status == "failed":
             tag += " - FAILED"
         lines.append(f"  [{mark}] {item.id}. {item.description}  ({tag})")
-    return "\n".join(lines)
+        lines.append("")
+    return "\n".join(lines).rstrip("\n")
+
+
+class LiveTaskPrinter:
+    """Keeps one checklist on screen, redrawn in place, instead of the
+    naive `print(render(run))` on every status change - a plan with 10
+    steps changes status ~3x each (routed, running, done/escalated), so
+    that would scroll ~30 near-duplicate full-list dumps past by the end
+    of the run. Redrawing over the previous one in place is what actually
+    makes progress overseeable at a glance.
+
+    Falls back to plain sequential prints when stdout isn't a real
+    terminal (piped/redirected output, a log file, a non-interactive
+    CI run) - the ANSI cursor codes below would otherwise show up as
+    garbage there instead of doing anything useful."""
+
+    def __init__(self, enabled: bool = True):
+        self._enabled = enabled and sys.stdout.isatty()
+        self._lines_printed = 0
+
+    def show(self, run: TaskRun) -> None:
+        text = render(run)
+        if not self._enabled:
+            print(text)
+            return
+        if self._lines_printed:
+            # Move the cursor up over everything printed last time, then
+            # clear from there to the end of the screen, before redrawing.
+            print(f"\x1b[{self._lines_printed}A\x1b[J", end="")
+        print(text)
+        self._lines_printed = text.count("\n") + 1

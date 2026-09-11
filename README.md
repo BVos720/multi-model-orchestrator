@@ -46,14 +46,14 @@ exactly what each agent said and did.
 
 ## Modes
 
-- `orchestrator run "<task>"` - plan/execute/review swarm (the diagram above).
+- `orchest run "<task>"` - plan/execute/review swarm (the diagram above).
   Best for coding tasks: local model does the boilerplate, cloud models do the
   parts that need judgment.
-- `orchestrator ask "<question>"` - debate mode: every configured cloud/planner
+- `orchest ask "<question>"` - debate mode: every configured cloud/planner
   model answers independently, then one of them merges/judges a final verdict.
   Good for cross-checking factual or design questions.
-- `orchestrator status` - see which agents are actually configured and ready.
-- `orchestrator reset` - clear the shared context file and start fresh.
+- `orchest status` - see which agents are actually configured and ready.
+- `orchest reset` - clear the shared context file and start fresh.
 
 ## Setup
 
@@ -84,7 +84,7 @@ before pulling a large model.
    interactively).
 4. Install Ollama (https://ollama.com) and `ollama pull qwen2.5-coder:32b`
    (or a smaller tag - see note below).
-5. `orchestrator status` to confirm what's wired up.
+5. `orchest status` to confirm what's wired up.
 
 ### Local model size
 
@@ -95,12 +95,12 @@ your machine, set `OLLAMA_MODEL=qwen2.5-coder:7b` (~5GB) in `.env` instead.
 ## Networking two PCs: Supervisor + Worker(s)
 
 You don't need a second copy of this project on the second PC. One machine
-is the **Supervisor** - it's the one where you run `orchestrator`, and it's
+is the **Supervisor** - it's the one where you run `orchest`, and it's
 the only one that ever talks to the cloud models (Claude Code, Gemini,
 DeepSeek, ...). Any other PC is a **Worker** - all it needs is Ollama itself
 running, nothing else installed. The Supervisor dispatches "local complexity"
 plan steps to whichever registered Worker (or itself) is free - this is what
-`orchestrator settings add-host` + `HostsStore` already builds: it's not a
+`orchest settings add-host` + `HostsStore` already builds: it's not a
 separate mode, it's just how you use hosts.json once you register more than
 one machine. That's the "build your own scalable computer" part - add a
 Worker, register it, the pool gets bigger.
@@ -124,12 +124,12 @@ Worker, register it, the pool gets bigger.
    devices; that's the whole security model here.
 4. On the Supervisor, register each machine by name:
    ```
-   orchestrator settings add-host laptop      --url http://localhost:11434     --model qwen2.5-coder:7b
-   orchestrator settings add-host desktop-3070 --url http://192.168.50.2:11434 --model qwen2.5-coder:14b
+   orchest settings add-host laptop      --url http://localhost:11434     --model qwen2.5-coder:7b
+   orchest settings add-host desktop-3070 --url http://192.168.50.2:11434 --model qwen2.5-coder:14b
    ```
-   `orchestrator run` will prompt you at startup to pick which registered
+   `orchest run` will prompt you at startup to pick which registered
    host(s) handle local steps for that run (or pass `--local desktop-3070`,
-   `--local all`, etc.) - see `orchestrator settings hosts`.
+   `--local all`, etc.) - see `orchest settings hosts`.
    `OllamaAgent` round-robins across whichever hosts you pick and skips one
    that's unreachable or errors, so one PC being off just means the other
    picks up the work.
@@ -184,7 +184,7 @@ have access to one machine here):**
    ```
 3. Get a GGUF model sized for your machines' *combined* memory (not just
    one) - e.g. a 32B or 70B model at Q4 quantization, from Hugging Face.
-4. On the **master** machine (wherever you'll run `orchestrator` from),
+4. On the **master** machine (wherever you'll run `orchest` from),
    start `llama-server`, pointing it at every worker:
    ```
    build/bin/llama-server --rpc <worker-ip>:50052 -m path\to\model.gguf --host 0.0.0.0 --port 8080
@@ -195,11 +195,11 @@ have access to one machine here):**
    OpenAI-compatible API our custom-provider code already knows, so no new
    code is needed, just:
    ```
-   orchestrator settings add-cluster big-llama --url http://localhost:8080/v1 --model <name from llama-server>
+   orchest settings add-cluster big-llama --url http://localhost:8080/v1 --model <name from llama-server>
    ```
 
 Hard-complexity steps now try `big-llama` first - free, no API cost -
-before falling back to your planner. `orchestrator settings clusters` /
+before falling back to your planner. `orchest settings clusters` /
 `remove-cluster` manage it; the menu has the same under Settings.
 
 ## Providers
@@ -209,9 +209,9 @@ before falling back to your planner. `orchestrator settings clusters` /
 | `claude-code` | planner | `claude` CLI on PATH, logged in | Shells out to `claude -p`, runs with `--permission-mode plan` and every mutating tool disallowed - it only ever generates text here, never edits files itself. |
 | `gemini` | planner | `gemini` CLI logged in (or `GEMINI_API_KEY`) | Prefers the free Google-account-login CLI over a billed API key. |
 | `copilot` | planner | `copilot` CLI logged in | GitHub account login, needs a Copilot plan - no separate key. |
-| custom (OpenAI-compatible) | cloud/cloud-fast/planner | an API key via `orchestrator settings add <name>` | DeepSeek, Groq, OpenRouter, Cerebras, Mistral, OpenAI, or any other OpenAI-compatible endpoint. Multiple accounts per provider pool with weighted rotation (`settings add-account`). |
+| custom (OpenAI-compatible) | cloud/cloud-fast/planner | an API key via `orchest settings add <name>` | DeepSeek, Groq, OpenRouter, Cerebras, Mistral, OpenAI, or any other OpenAI-compatible endpoint. Multiple accounts per provider pool with weighted rotation (`settings add-account`). |
 | llama.cpp RPC cluster | local-hard | a cluster you build/run yourself, see above | Free, no API cost - hard steps try this before the planner. |
-| `ollama` | local | Ollama running, model pulled | Free, local, pooled across registered hosts (`orchestrator settings add-host`). |
+| `ollama` | local | Ollama running, model pulled | Free, local, pooled across registered hosts (`orchest settings add-host`). |
 
 Add another provider by implementing `Agent` in `src/orchestrator/providers/`
 (one `async def complete(prompt, system=None) -> str` method) and wiring it
@@ -219,7 +219,7 @@ into `Fleet` in `config.py`.
 
 ## Free models worth adding
 
-`orchestrator settings presets` lists these; `orchestrator settings add <name>`
+`orchest settings presets` lists these; `orchest settings add <name>`
 configures one (it'll prompt for the key - **run this yourself in a terminal,
 never paste a key into chat with me**, the key should never pass through
 anything but your own `.env` file). All four below have a genuine standing
@@ -241,7 +241,7 @@ in Setup above.
 **Not free, just cheap** - **DeepSeek** is often lumped in with the above but
 isn't: it's billed per token on your own key (very low prices, occasionally
 promotional discounts, but not a standing $0 tier). Same for plain **OpenAI**.
-Both are still one `orchestrator settings add <name>` away if you want them.
+Both are still one `orchest settings add <name>` away if you want them.
 
 Sources: [OpenRouter's 2026 free-tier comparison](https://openrouter.ai/blog/tutorials/free-llm-apis-compared/),
 [Cerebras OpenAI-compatibility docs](https://inference-docs.cerebras.ai/resources/openai),
@@ -270,7 +270,7 @@ here cleanly instead:
 
 ## Building a standalone .exe
 
-`.venv\Scripts\orchestrator.exe` (created by setup) already runs without
+`.venv\Scripts\orchest.exe` (created by setup) already runs without
 typing `python`, but it still needs the venv/Python next to it. For a
 single portable .exe that bundles Python and every dependency:
 
@@ -278,7 +278,7 @@ single portable .exe that bundles Python and every dependency:
 powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 ```
 
-Output: `dist\orchestrator.exe` (~30MB, built and verified working from a
+Output: `dist\Orchest.exe` (~30MB, built and verified working from a
 clean directory with no venv active). It's still just the *program* -
 config (`.env`, `.orchestrator\`) lives next to wherever you run it from,
 same as the pip-installed version. Copy `.env.example` to `.env` beside the
@@ -295,7 +295,7 @@ src/orchestrator/
   hooks.py         pre/post-step extension points
   context_store.py shared, persisted, auto-compacting blackboard
   config.py        builds the Fleet from what's actually available
-  cli.py           `orchestrator run|ask|status|reset`
+  cli.py           `orchest run|ask|status|reset`
 scripts/
   setup.ps1        automated setup (Windows)
   setup.sh         automated setup (macOS/Linux)

@@ -13,7 +13,7 @@ from .cluster_store import ClusterConfig, ClusterStore
 from .config import build_fleet
 from .context_store import ContextStore
 from .env_store import set_env_var
-from .hosts_store import HostConfig, HostsStore
+from .hosts_store import HostConfig, HostsStore, POPULAR_MODELS
 from . import network
 from .modes import debate, plan_execute
 from .router import DEFAULT_BIAS
@@ -43,6 +43,45 @@ STYLE = questionary.Style(
 
 def _pause() -> None:
     questionary.text("Press enter to continue...", style=STYLE).ask()
+
+
+def _pull_model_with_progress(url: str, model: str) -> bool:
+    """Pull `model` on the Ollama instance at `url`, rendering
+    network.pull_model's progress as one self-overwriting line."""
+
+    def _on_progress(chunk: dict) -> None:
+        status = chunk.get("status", "")
+        total = chunk.get("total")
+        completed = chunk.get("completed")
+        if total and completed:
+            print(f"\r  {status}: {completed / total * 100:5.1f}%   ", end="", flush=True)
+        else:
+            print(f"\r  {status}" + " " * 20, end="", flush=True)
+
+    ok = asyncio.run(network.pull_model(url, model, on_progress=_on_progress))
+    print()
+    return ok
+
+
+def _pick_model(url: str) -> tuple[str, bool]:
+    """Let the user pick a model for `url` from what's already pulled
+    there plus a curated shortlist, or type any other name. Returns
+    (model, needs_pull) - needs_pull is True when the pick isn't already
+    on that machine, so the caller knows to offer `_pull_model_with_progress`."""
+    pulled = asyncio.run(network.list_models(url)) if url else []
+    choices = [questionary.Choice(f"{m}  (already pulled)", value=m) for m in pulled]
+    choices += [questionary.Choice(m, value=m) for m in POPULAR_MODELS if m not in pulled]
+    choices.append(questionary.Choice("Other (type a model name)", value="__other__"))
+    picked = questionary.select(
+        f"Model to use on {url}:" if url else "Model to use:",
+        choices=choices,
+        style=STYLE,
+    ).ask()
+    if picked is None:
+        return "", False
+    if picked == "__other__":
+        picked = questionary.text("Model name (Ollama tag, e.g. gemma4:12b):", style=STYLE).ask() or ""
+    return picked, bool(picked) and picked not in pulled
 
 
 def _print_status() -> None:
@@ -389,21 +428,62 @@ def _hosts_menu() -> None:
             hosts = HostsStore().load()
             if not hosts:
                 print("No hosts registered - using env default.")
-            for h in hosts:
-                print(f"  {h.name:16} {h.model:22} [{h.size:8}] {h.url}")
+            else:
+                async def _check(url: str) -> tuple[bool, list[str]]:
+                    reachable = await network.ollama_reachable(url)
+                    models = await network.list_models(url) if reachable else []
+                    return reachable, models
+
+                async def _check_all() -> dict[str, tuple[bool, list[str]]]:
+                    urls = {h.url for h in hosts}
+                    results = await asyncio.gather(*[_check(u) for u in urls])
+                    return dict(zip(urls, results))
+
+                status_by_url = asyncio.run(_check_all())
+                for h in hosts:
+                    reachable, models = status_by_url.get(h.url, (False, []))
+                    if not reachable:
+                        tag = "unreachable"
+                    elif h.model in models:
+                        tag = "installed"
+                    else:
+                        tag = "NOT installed"
+                    print(f"  {h.name:16} {h.model:22} [{h.size:8}] {h.url:28} ({tag})")
             _pause()
 
         elif choice == "Scan network for workers":
-            ip = network.local_ip()
-            if ip == "127.0.0.1":
-                print("Could not determine this machine's LAN IP - are you connected to a network?")
-                _pause()
+            source = questionary.select(
+                "Scan which way?",
+                choices=[
+                    questionary.Choice("Local LAN subnet (/24 sweep)", value="lan"),
+                    questionary.Choice(
+                        "Tailscale peers (any subnet, already encrypted)", value="tailscale"
+                    ),
+                ],
+                style=STYLE,
+            ).ask()
+            if not source:
                 continue
-            subnet = ip.rsplit(".", 1)[0] + ".0/24"
-            print(f"\nScanning {subnet} for Ollama workers (port 11434)...")
-            found = asyncio.run(network.scan_for_workers())
+
+            if source == "tailscale":
+                print("\nAsking Tailscale for peers, then probing each for Ollama...")
+                found = asyncio.run(network.scan_tailscale_peers())
+                if not found and not shutil.which("tailscale"):
+                    print("`tailscale` CLI not found - is Tailscale installed and running?")
+                    _pause()
+                    continue
+            else:
+                ip = network.local_ip()
+                if ip == "127.0.0.1":
+                    print("Could not determine this machine's LAN IP - are you connected to a network?")
+                    _pause()
+                    continue
+                subnet = ip.rsplit(".", 1)[0] + ".0/24"
+                print(f"\nScanning {subnet} for Ollama workers (port 11434)...")
+                found = asyncio.run(network.scan_for_workers())
+
             if not found:
-                print("No Ollama workers found on the local network.")
+                print("No Ollama workers found.")
                 _pause()
                 continue
 
@@ -428,21 +508,34 @@ def _hosts_menu() -> None:
             for i in to_add:
                 w = candidates[i]
                 name = questionary.text("Host name:", default=w["ip"].replace(".", "-"), style=STYLE).ask()
-                model = questionary.text(
-                    "Model to use:", default=w["models"][0] if w["models"] else "", style=STYLE
-                ).ask()
+                model, needs_pull = _pick_model(w["url"])
                 size = questionary.select(
                     "Size (routing hint):", choices=["standard", "small", "big"], style=STYLE
                 ).ask()
                 if name and model and size:
+                    if needs_pull and questionary.confirm(
+                        f"'{model}' isn't pulled on {w['url']} yet - pull it now?", default=True, style=STYLE
+                    ).ask():
+                        print(f"Pulling '{model}' on {w['url']} (this can take a while for a big model)...")
+                        if _pull_model_with_progress(w["url"], model):
+                            print(f"'{model}' pulled.")
+                        else:
+                            print(f"! Pull failed - '{model}' may not be usable on {w['url']} yet.")
                     HostsStore().add(HostConfig(name=name, url=w["url"], model=model, size=size))
                     print(f"Registered '{name}' -> {model} @ {w['url']} (size={size})")
+                    print(f"Neural handshake complete - '{name}' is online and drift-compatible.")
+                    warning = network.connection_warning(w["url"])
+                    if warning:
+                        print(f"! {warning}")
             _pause()
 
         elif choice == "Add a host":
             name = questionary.text("Host name (e.g. laptop, desktop-3070):", style=STYLE).ask()
             url = questionary.text("URL (e.g. http://localhost:11434, or a Tailscale IP):", style=STYLE).ask()
-            model = questionary.text("Model to run on THIS machine (pick one that fits its VRAM):", style=STYLE).ask()
+            if not (name and url):
+                _pause()
+                continue
+            model, needs_pull = _pick_model(url)
             size = questionary.select(
                 "Size (routing hint - short steps prefer 'small', longer ones prefer 'big'; "
                 "register the same URL twice under different names/sizes to offer both):",
@@ -450,8 +543,23 @@ def _hosts_menu() -> None:
                 style=STYLE,
             ).ask()
             if name and url and model and size:
+                if needs_pull and questionary.confirm(
+                    f"'{model}' isn't pulled on {url} yet - pull it now?", default=True, style=STYLE
+                ).ask():
+                    print(f"Pulling '{model}' on {url} (this can take a while for a big model)...")
+                    if _pull_model_with_progress(url, model):
+                        print(f"'{model}' pulled.")
+                    else:
+                        print(f"! Pull failed - '{model}' may not be usable on {url} yet.")
                 HostsStore().add(HostConfig(name=name, url=url, model=model, size=size))
                 print(f"Registered '{name}' -> {model} @ {url} (size={size})")
+                if asyncio.run(network.ollama_reachable(url)):
+                    print(f"Neural handshake complete - '{name}' is online and drift-compatible.")
+                else:
+                    print(f"(Not reachable yet at {url} - fine if that worker just isn't up right now.)")
+                warning = network.connection_warning(url)
+                if warning:
+                    print(f"! {warning}")
             _pause()
 
         elif choice == "Remove a host":
@@ -482,7 +590,7 @@ def _hosts_menu() -> None:
                 "(direct Ethernet cable or Tailscale - see README \"Networking two PCs\"), "
                 "then on the SUPERVISOR, run:\n"
             )
-            print(f"  orchestrator settings add-host {name} --url http://{ip}:11434 --model {model}")
+            print(f"  orchest settings add-host {name} --url http://{ip}:11434 --model {model}")
             print("\nNever port-forward 11434 to the public internet - Ollama has no built-in auth.")
             _pause()
 
@@ -570,7 +678,7 @@ def _reset_menu() -> None:
 
 
 def main_menu() -> None:
-    """Entry point for `orchestrator` with no subcommand, or `orchestrator menu`."""
+    """Entry point for `orchest` with no subcommand, or `orchest menu`."""
     print(BANNER)
     print()
     while True:

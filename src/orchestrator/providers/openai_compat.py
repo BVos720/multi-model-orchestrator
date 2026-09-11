@@ -35,7 +35,7 @@ class OpenAICompatAgent(Agent):
     and retries (the "wait list") before finally raising, which
     plan_execute's existing escalation path then bumps to a stronger tier.
 
-    Normally constructed by `orchestrator settings add`/`settings add-account`
+    Normally constructed by `orchest settings add`/`settings add-account`
     (see actions.py) rather than directly - those write keys to .env and the
     rest of this config to .orchestrator/providers.json.
     """

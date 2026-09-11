@@ -60,6 +60,6 @@ else
 fi
 
 echo "== Status =="
-./.venv/bin/orchestrator status || true
+./.venv/bin/orchest status || true
 echo
-echo "Setup done. Try:  ./.venv/bin/orchestrator run \"write a fizzbuzz function\""
+echo "Setup done. Try:  ./.venv/bin/orchest run \"write a fizzbuzz function\""

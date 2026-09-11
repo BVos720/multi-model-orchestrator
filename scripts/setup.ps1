@@ -1,6 +1,6 @@
 <#
   Automated setup for multi-model-orchestrator (Windows).
-  Installs/checks everything needed and gets you to a working `orchestrator status`.
+  Installs/checks everything needed and gets you to a working `orchest status`.
 
   Usage:  powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
   Flags:  -SkipOllama   (skip installing Ollama / pulling a model)
@@ -100,5 +100,5 @@ if (-not $SkipOllama) {
 
 # --- 6. Final status -------------------------------------------------------
 Section "Status"
-& "$root\.venv\Scripts\orchestrator.exe" status
-Write-Host "`nSetup done. Try:  .\.venv\Scripts\orchestrator run `"write a fizzbuzz function`"" -ForegroundColor Cyan
+& "$root\.venv\Scripts\orchest.exe" status
+Write-Host "`nSetup done. Try:  .\.venv\Scripts\orchest run `"write a fizzbuzz function`"" -ForegroundColor Cyan

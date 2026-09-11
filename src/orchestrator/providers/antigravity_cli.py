@@ -43,7 +43,7 @@ class AntigravityCliAgent(Agent):
         self.tier = tier
         self.model = model  # a model slug, if you know a current one - optional
         self.effort = effort  # "low" | "medium" | "high" - documented, safer than guessing a model slug
-        self.mode = mode  # "text" (default, read-only) or "code" (used by `orchestrator code`)
+        self.mode = mode  # "text" (default, read-only) or "code" (used by `orchest code`)
         self.timeout = timeout
 
     async def complete(self, prompt: str, system: str | None = None) -> str:
@@ -56,7 +56,7 @@ class AntigravityCliAgent(Agent):
             # No confirmed fine-grained "allow edits but not shell" flag for
             # agy like Claude Code's --disallowedTools - this is coarser:
             # every tool gets approved, not just file edits. Documented as
-            # such in `orchestrator code`'s help text.
+            # such in `orchest code`'s help text.
             args += ["--dangerously-skip-permissions"]
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
