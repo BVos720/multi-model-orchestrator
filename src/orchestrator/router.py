@@ -16,6 +16,7 @@ COMPLEX_HINTS = (
 class RoutingDecision:
     tier: str  # "local" | "cloud-fast" | "cloud"
     reason: str
+    size_hint: str = "standard"  # "small" | "big" - only meaningful when tier == "local"
 
 
 DEFAULT_BIAS = 5  # 0 = always favor cloud/precision, 10 = always favor local/savings
@@ -45,6 +46,7 @@ def route_step(
     words = len(text.split())
     hit_complex = any(h in text for h in COMPLEX_HINTS)
     hit_simple = any(h in text for h in SIMPLE_HINTS)
+    size = "small" if words <= 15 else "big"
 
     if "security" in text and local_bias < 10:
         return RoutingDecision("cloud", "security-sensitive step - escalated regardless of bias")
@@ -54,18 +56,18 @@ def route_step(
 
     if local_bias <= 1:  # max precision: only the most trivial steps go local
         if hit_simple and not hit_complex and words <= 8:
-            return RoutingDecision("local", f"bias={local_bias}: trivial even at max-precision bias")
+            return RoutingDecision("local", f"bias={local_bias}: trivial even at max-precision bias", size)
         return RoutingDecision("cloud", f"bias={local_bias}: max-precision - escalate by default")
 
     if local_bias >= 9:  # max savings: try local unless a hard complexity keyword hit
         if hit_complex:
             return RoutingDecision("cloud", f"bias={local_bias}: matched complexity keyword, still escalating")
-        return RoutingDecision("local", f"bias={local_bias}: max-savings - try local by default")
+        return RoutingDecision("local", f"bias={local_bias}: max-savings - try local by default", size)
 
     if declared_complexity == "high" or hit_complex:
         return RoutingDecision("cloud", "high-complexity step - needs the strong/default model")
     if declared_complexity == "low" or hit_simple or words <= word_threshold:
-        return RoutingDecision("local", f"short/simple step (<= {word_threshold} words, bias={local_bias})")
+        return RoutingDecision("local", f"short/simple step (<= {word_threshold} words, bias={local_bias})", size)
 
     # Not simple enough for local, but nothing flags it as needing real
     # judgment either - this is the "some tasks only need haiku/flash"

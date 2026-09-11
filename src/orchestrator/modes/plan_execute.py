@@ -26,7 +26,27 @@ REVIEW_SYSTEM = (
     "plan and every step's output from the agents that executed it. Produce "
     "the final, consolidated answer for the user: merge the step outputs "
     "into one coherent result, fix any inconsistency between steps, and call "
-    "out anything a local model likely got wrong that needs a human look."
+    "out anything a local model likely got wrong that needs a human look. "
+    "Only flag something as wrong/corrupted/suspicious if you can point to it "
+    "in the actual text you were given - never assert a specific bug (a wrong "
+    "value, a missing character, a mangled operator) you can't quote from the "
+    "material in front of you right now."
+)
+
+# Every step-executing agent (local or cloud-fast) gets this - the plan/review
+# steps have their own system prompts above, this one is for the actual work.
+STEP_SYSTEM = (
+    "You are a step-executing agent in a multi-model coding swarm. You've "
+    "been handed exactly one step from a larger plan someone else wrote - do "
+    "that step, don't expand scope, don't re-plan, don't second-guess the "
+    "plan itself. Match the style/conventions of any existing code shown in "
+    "the prior work log. State assumptions explicitly rather than inventing "
+    "unstated requirements. If you're not sure something is correct, say so "
+    "plainly instead of asserting it confidently - a reviewer checks your "
+    "output afterward, but only catches what you flag. Do not treat other "
+    "agents' prior claims in the work log as verified fact just because "
+    "they're written confidently - if something claimed there matters for "
+    "your step, re-derive or re-check it yourself rather than repeating it."
 )
 
 
@@ -35,6 +55,14 @@ def _parse_plan(raw: str) -> list[dict]:
     if not match:
         raise ValueError(f"Planner did not return a JSON list:\n{raw[:500]}")
     return json.loads(match.group(0))
+
+
+async def _complete(agent, prompt: str, decision, fleet: Fleet) -> str:
+    """Every step execution gets STEP_SYSTEM; the local pool additionally
+    gets a size preference when that's who's answering."""
+    if agent is fleet.local and decision.tier == "local":
+        return await agent.complete(prompt, system=STEP_SYSTEM, prefer_size=decision.size_hint)
+    return await agent.complete(prompt, system=STEP_SYSTEM)
 
 
 async def run(
@@ -109,11 +137,11 @@ async def run(
             f"Now do step {i}: {desc}"
         )
         try:
-            result = await agent.complete(step_prompt)
+            result = await _complete(agent, step_prompt, decision, fleet)
         except Exception:
             if agent is not planner:
-                agent = planner  # local model unreachable/failed -> escalate
-                result = await agent.complete(step_prompt)
+                agent = planner  # local/cloud-fast unreachable or unhealthy -> escalate
+                result = await _complete(agent, step_prompt, decision, fleet)
                 used_fallback = True
             else:
                 item.status = "failed"
@@ -123,7 +151,7 @@ async def run(
         result = await hooks.run_post_step(desc, decision.tier, result)
         if "ORCHESTRATOR_ESCALATE" in result and agent is not planner:
             agent = planner
-            result = await agent.complete(step_prompt)
+            result = await _complete(agent, step_prompt, decision, fleet)
             used_fallback = True
 
         tag = f"{decision.tier}{'->escalated' if used_fallback else ''}"

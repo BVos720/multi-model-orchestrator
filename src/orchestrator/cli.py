@@ -304,14 +304,20 @@ def settings_remove(name: str, label: str | None):
 @click.argument("name")
 @click.option("--url", required=True, help="e.g. http://localhost:11434 or a Tailscale IP for a remote PC.")
 @click.option("--model", required=True, help="Model to run on THIS machine - pick one that fits its VRAM.")
-def settings_add_host(name: str, url: str, model: str):
+@click.option("--size", type=click.Choice(["small", "standard", "big"]), default="standard", help="Routing hint - short steps prefer a 'small' host, longer ones prefer 'big'.")
+def settings_add_host(name: str, url: str, model: str, size: str):
     """Register a machine running Ollama, e.g.:
 
     orchestrator settings add-host laptop --url http://localhost:11434 --model qwen2.5-coder:7b
-    orchestrator settings add-host desktop-3070 --url http://100.x.y.2:11434 --model qwen2.5-coder:14b
+
+    Register the SAME machine twice (same --url) with different --model/
+    --size to let it serve both a fast small model and a stronger big one:
+
+    orchestrator settings add-host laptop-small --url http://localhost:11434 --model qwen2.5-coder:1.5b --size small
+    orchestrator settings add-host laptop-big   --url http://localhost:11434 --model qwen2.5-coder:7b   --size big
     """
-    HostsStore().add(HostConfig(name=name, url=url, model=model))
-    click.echo(f"Registered host '{name}' -> {model} @ {url}")
+    HostsStore().add(HostConfig(name=name, url=url, model=model, size=size))
+    click.echo(f"Registered host '{name}' -> {model} @ {url} (size={size})")
 
 
 @settings.command("hosts")
@@ -322,7 +328,7 @@ def settings_hosts():
         click.echo("No hosts registered - using env default (OLLAMA_HOST/OLLAMA_HOSTS/OLLAMA_MODEL).")
         return
     for h in hosts:
-        click.echo(f"  {h.name:16} {h.model:22} {h.url}")
+        click.echo(f"  {h.name:16} {h.model:22} [{h.size:8}] {h.url}")
 
 
 @settings.command("remove-host")

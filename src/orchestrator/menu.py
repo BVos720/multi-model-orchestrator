@@ -301,16 +301,22 @@ def _hosts_menu() -> None:
             if not hosts:
                 print("No hosts registered - using env default.")
             for h in hosts:
-                print(f"  {h.name:16} {h.model:22} {h.url}")
+                print(f"  {h.name:16} {h.model:22} [{h.size:8}] {h.url}")
             _pause()
 
         elif choice == "Add a host":
             name = questionary.text("Host name (e.g. laptop, desktop-3070):", style=STYLE).ask()
             url = questionary.text("URL (e.g. http://localhost:11434, or a Tailscale IP):", style=STYLE).ask()
             model = questionary.text("Model to run on THIS machine (pick one that fits its VRAM):", style=STYLE).ask()
-            if name and url and model:
-                HostsStore().add(HostConfig(name=name, url=url, model=model))
-                print(f"Registered '{name}' -> {model} @ {url}")
+            size = questionary.select(
+                "Size (routing hint - short steps prefer 'small', longer ones prefer 'big'; "
+                "register the same URL twice under different names/sizes to offer both):",
+                choices=["standard", "small", "big"],
+                style=STYLE,
+            ).ask()
+            if name and url and model and size:
+                HostsStore().add(HostConfig(name=name, url=url, model=model, size=size))
+                print(f"Registered '{name}' -> {model} @ {url} (size={size})")
             _pause()
 
         elif choice == "Remove a host":

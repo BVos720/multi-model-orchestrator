@@ -9,13 +9,21 @@ HOSTS_FILE = Path(".orchestrator") / "hosts.json"
 
 @dataclass
 class HostConfig:
-    """One Ollama instance - one machine's GPU - with the model that
-    actually fits it. Different machines can run different models: a 6GB
-    laptop GPU and an 8GB desktop 3070 don't have the same ceiling."""
+    """One (machine, model) pair - one Ollama instance running one model
+    that fits its VRAM. Register the SAME machine twice with two different
+    models/names (e.g. "laptop-small" + "laptop-big", same url) to let it
+    serve both a fast small model and a stronger big one - Ollama loads
+    whichever model a request asks for.
+
+    size ("small"|"standard"|"big") is just a routing hint: short/simple
+    local-eligible steps prefer a "small" host if one's registered, longer
+    ones prefer "big" - falls back to whatever's actually healthy/free
+    either way, so this is an optimization, not a hard requirement."""
 
     name: str
     url: str
     model: str
+    size: str = "standard"
 
 
 class HostsStore:
