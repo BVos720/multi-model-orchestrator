@@ -145,13 +145,45 @@ direct cable/Tailscale alone assumes only your two PCs are on that link.
 | Provider | Tier | Needs | Notes |
 |---|---|---|---|
 | `claude-code` | planner | `claude` CLI on PATH, logged in | Shells out to `claude -p`, runs with `--permission-mode plan` and every mutating tool disallowed - it only ever generates text here, never edits files itself. |
-| `gemini` | planner | `GEMINI_API_KEY` | Google AI Studio, free tier. |
-| `openai` | cloud | `OPENAI_API_KEY` | Any OpenAI-compatible endpoint - OpenAI, Groq, OpenRouter, etc. This is the "some other model" slot. Skipped entirely if unset. |
-| `ollama` | local | Ollama running, model pulled | Free, local, pooled across `OLLAMA_HOSTS`. |
+| `gemini` | planner | `gemini` CLI logged in (or `GEMINI_API_KEY`) | Prefers the free Google-account-login CLI over a billed API key. |
+| custom (OpenAI-compatible) | cloud/planner | an API key via `orchestrator settings add <name>` | DeepSeek, Groq, OpenRouter, Cerebras, Mistral, OpenAI, or any other OpenAI-compatible endpoint. This is the "some other model" slot. |
+| `ollama` | local | Ollama running, model pulled | Free, local, pooled across registered hosts (`orchestrator settings add-host`). |
 
 Add another provider by implementing `Agent` in `src/orchestrator/providers/`
 (one `async def complete(prompt, system=None) -> str` method) and wiring it
 into `Fleet` in `config.py`.
+
+## Free models worth adding
+
+`orchestrator settings presets` lists these; `orchestrator settings add <name>`
+configures one (it'll prompt for the key - **run this yourself in a terminal,
+never paste a key into chat with me**, the key should never pass through
+anything but your own `.env` file). All four below have a genuine standing
+free tier as of writing - no credit card, not an expiring trial credit -
+though limits are conservative on purpose (they want you to upgrade if you
+outgrow them):
+
+| Provider | Free limits | Best for | Get a key |
+|---|---|---|---|
+| **Groq** | ~30 req/min, 1,000 req/day | Speed - ~320 tok/s on Llama 3.3 70B via custom LPU hardware. Good default "cloud" escalation tier. | [console.groq.com](https://console.groq.com) |
+| **OpenRouter** | ~20 req/min, 50/day (1,000/day with a one-time $10 top-up) | Variety - one key reaches ~20+ different free-tagged models across providers. Model id must end in `:free` or it's billed. | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| **Cerebras** | ~30 req/min, ~1M tokens/day | Volume - highest daily token ceiling of the four, still fast. | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
+| **Mistral** | ~1B tokens/month (rate-limited) | Coding specifically - the preset points at `codestral-latest`. Console makes you "activate billing" even for the free Experiment tier, but no card is charged. | [console.mistral.ai](https://console.mistral.ai) |
+
+Also already free without any of this: **Claude Code** (your existing login)
+and the **Gemini CLI** (`gemini`, your Google account login) - both covered
+in Setup above.
+
+**Not free, just cheap** - **DeepSeek** is often lumped in with the above but
+isn't: it's billed per token on your own key (very low prices, occasionally
+promotional discounts, but not a standing $0 tier). Same for plain **OpenAI**.
+Both are still one `orchestrator settings add <name>` away if you want them.
+
+Sources: [OpenRouter's 2026 free-tier comparison](https://openrouter.ai/blog/tutorials/free-llm-apis-compared/),
+[Cerebras OpenAI-compatibility docs](https://inference-docs.cerebras.ai/resources/openai),
+[Mistral API docs](https://docs.mistral.ai/resources/migration-guides) - limits
+drift over time, so double check on the provider's own page if something
+here looks stale.
 
 ## On claude-flow / "ruflo"
 
