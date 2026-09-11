@@ -7,6 +7,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -281,3 +282,110 @@ def open_ollama_log_window() -> bool:
         return True
     except OSError:
         return False
+
+
+def _set_ollama_host_env() -> str:
+    """Persist OLLAMA_HOST=0.0.0.0:11434 as a USER environment variable (no
+    admin needed) so the next time Ollama starts here, it binds to every
+    interface instead of loopback-only - the single most common reason a
+    "worker" never actually answers the supervisor. Reads/writes the
+    persisted registry value directly (not os.environ, which only reflects
+    THIS process and wouldn't see a value set outside it). Only takes
+    effect on Ollama's next restart - this can't reach into an already-
+    running Ollama process and change what it's bound to.
+    Returns "already-set", "set", or "error"."""
+    try:
+        check = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             '[Environment]::GetEnvironmentVariable("OLLAMA_HOST", "User")'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "error"
+    if check.stdout.strip() in ("0.0.0.0:11434", "0.0.0.0"):
+        return "already-set"
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             '[Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0:11434", "User")'],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        return "set"
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return "error"
+
+
+_FIREWALL_RULE_NAME = "Ollama (11434)"
+
+
+def _firewall_rule_exists() -> bool:
+    try:
+        check = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-NetFirewallRule -DisplayName '{_FIREWALL_RULE_NAME}' -ErrorAction SilentlyContinue) -ne $null"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return check.stdout.strip().lower() == "true"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _add_firewall_rule_elevated() -> str:
+    """Add a Windows Firewall inbound-allow rule for Ollama's port, via a
+    real UAC elevation prompt - this never silently grants itself admin
+    rights; Windows itself asks the user to approve the one elevated
+    command, same as any installer that needs to touch the firewall.
+    Declining that prompt is a normal, valid answer, not an error we hide.
+
+    A temp .ps1 file (rather than nested quoting through three shells) is
+    what actually runs elevated - self-deletes at the end either way.
+    Returns "already-present", "added", or "declined-or-error"."""
+    if _firewall_rule_exists():
+        return "already-present"
+
+    script_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(
+                f"New-NetFirewallRule -DisplayName '{_FIREWALL_RULE_NAME}' "
+                "-Direction Inbound -Protocol TCP -LocalPort 11434 -Action Allow | Out-Null"
+            )
+            script_path = f.name
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Start-Process powershell -Verb RunAs -Wait -ArgumentList "
+             f"'-NoProfile -ExecutionPolicy Bypass -File \"{script_path}\"'"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        if script_path:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+
+    return "added" if _firewall_rule_exists() else "declined-or-error"
+
+
+def configure_worker_networking() -> dict:
+    """Best-effort automation of the worker-PC networking setup that used
+    to be a manual, easy-to-get-wrong dance (see README "Networking two
+    PCs"): persist OLLAMA_HOST=0.0.0.0 and add a firewall allow rule for
+    Ollama's port. Windows-only, since this project's whole worker-
+    networking story already is - a no-op elsewhere.
+
+    Returns a dict describing what actually happened to each piece
+    ({"platform_supported", "ollama_host", "firewall"}) so the caller
+    reports it honestly instead of assuming success - the firewall step
+    in particular can be legitimately declined at its UAC prompt."""
+    if os.name != "nt":
+        return {"platform_supported": False}
+    return {
+        "platform_supported": True,
+        "ollama_host": _set_ollama_host_env(),
+        "firewall": _add_firewall_rule_elevated(),
+    }
