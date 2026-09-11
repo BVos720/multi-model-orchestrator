@@ -7,12 +7,21 @@ from .base import Agent
 
 
 class ClaudeCodeAgent(Agent):
-    """Wraps the `claude` CLI in non-interactive, read-only mode.
+    """Wraps the `claude` CLI.
 
     Uses your existing Claude Code login - no separate API key needed.
-    Always runs with --permission-mode plan and every mutating tool
-    disallowed: this agent is used purely as a planner/reviewer/text
-    generator inside the swarm, it must never edit files on its own.
+
+    mode="text" (default, used everywhere in the swarm): --permission-mode
+    plan with Bash/Edit/Write/NotebookEdit all disallowed - pure text
+    generation, it never touches disk.
+
+    mode="code" (only used by `orchestrator code`, never the plan/execute
+    swarm): allows Edit/Write so it can actually make changes in the
+    current directory, via --permission-mode acceptEdits (auto-accepts file
+    edits without an interactive prompt - required for headless use). Bash
+    stays disallowed even in this mode - it can write code, not run
+    arbitrary shell commands - a deliberate, narrower line than plain
+    `claude` gives you interactively.
     """
 
     def __init__(
@@ -21,6 +30,7 @@ class ClaudeCodeAgent(Agent):
         tier: str = "planner",
         model: str | None = None,
         timeout: float = 180.0,
+        mode: str = "text",
     ):
         if shutil.which("claude") is None:
             raise RuntimeError("`claude` CLI not found on PATH. Install/login to Claude Code first.")
@@ -28,14 +38,23 @@ class ClaudeCodeAgent(Agent):
         self.tier = tier
         self.model = model  # e.g. "sonnet", "opus" - alias passed via --model
         self.timeout = timeout
+        self.mode = mode
 
     async def complete(self, prompt: str, system: str | None = None) -> str:
-        args = [
-            "claude", "-p", "--output-format", "text",
-            "--permission-mode", "plan",
-            "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
-            "--no-session-persistence",
-        ]
+        if self.mode == "code":
+            args = [
+                "claude", "-p", "--output-format", "text",
+                "--permission-mode", "acceptEdits",
+                "--disallowedTools", "Bash,NotebookEdit",
+                "--no-session-persistence",
+            ]
+        else:
+            args = [
+                "claude", "-p", "--output-format", "text",
+                "--permission-mode", "plan",
+                "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
+                "--no-session-persistence",
+            ]
         if self.model:
             args += ["--model", self.model]
         if system:

@@ -24,7 +24,9 @@ from .context_store import ContextStore
 from .env_store import set_env_var
 from .hosts_store import HostConfig, HostsStore
 from .menu import main_menu
+from .modes import code as code_mode
 from .modes import debate, plan_execute
+from . import network
 from .router import DEFAULT_BIAS
 from .settings_store import PRESETS, SettingsStore
 from .task_list_store import TaskListStore, render
@@ -33,7 +35,7 @@ from .task_list_store import TaskListStore, render
 @click.group(invoke_without_command=True)
 @click.pass_context
 def main(ctx: click.Context):
-    """Multi-model orchestrator: Claude Code + Gemini + Ollama (+ others), working together.
+    """OrchestCLI: Claude Code + Antigravity + Copilot + Ollama (+ others), working together.
 
     Run with no arguments for an interactive arrow-key menu. Every action
     below is also a direct command, for scripting/automation.
@@ -80,17 +82,57 @@ def _pick_local_hosts(explicit: str | None) -> list[str] | None:
         return [n.strip() for n in choice.split(",")]
 
 
+async def _on_exhausted(failed_agent, error, candidates):
+    """When a planner looks out of quota mid-run: ask which agent to
+    continue with (interactive), or auto-pick the first candidate and say
+    so (non-interactive/scripted use) instead of just crashing the run."""
+    if not candidates:
+        return None
+    if not sys.stdin.isatty():
+        click.echo(f"! {failed_agent.name} looks out of capacity - continuing with {candidates[0].name}.")
+        return candidates[0]
+    click.echo(f"\n! {failed_agent.name} looks out of capacity: {error}")
+    click.echo("Continue with a different model?")
+    for i, a in enumerate(candidates, 1):
+        click.echo(f"  {i}. {a.name}")
+    click.echo(f"  {len(candidates) + 1}. abort")
+    choice = click.prompt("Choice", default="1")
+    try:
+        idx = int(choice)
+        return None if idx == len(candidates) + 1 else candidates[idx - 1]
+    except (ValueError, IndexError):
+        return None
+
+
 @main.command()
 @click.argument("task")
 @click.option("--max-steps", default=12, show_default=True, help="Cap on plan steps to execute.")
 @click.option("--local", "local_choice", default=None, help="Registered host name, comma-list, or 'all'. Prompts if omitted and >1 host is registered.")
 @click.option("--bias", "bias", type=click.IntRange(0, 10), default=None, help="Local<->cloud balance for this run only (0=always cloud, 10=always local first). Defaults to the persisted setting.")
 def run(task: str, max_steps: int, local_choice: str | None, bias: int | None):
-    """Plan with a heavy model, execute steps (local model first, escalate on complexity)."""
+    """Plan with a heavy model, execute steps (local model first, escalate on complexity). Read-only - see `code` to actually edit files."""
+    click.echo(f"Working in: {os.getcwd()}\n")
     fleet = build_fleet(local_hosts=_pick_local_hosts(local_choice))
     store = ContextStore()
-    result = asyncio.run(plan_execute.run(task, fleet, store, max_steps=max_steps, local_bias=bias))
+    result = asyncio.run(
+        plan_execute.run(task, fleet, store, max_steps=max_steps, local_bias=bias, on_exhausted=_on_exhausted)
+    )
     click.echo("\n=== FINAL RESULT ===\n")
+    click.echo(result)
+
+
+@main.command()
+@click.argument("task")
+def code(task: str):
+    """Actually edit/write files - like calling Claude Code directly, but
+    auto-picking whichever of Claude Code / Antigravity CLI / Copilot CLI
+    is available. Operates on the CURRENT directory (cd there first, same
+    as you would with `claude`). NOT read-only, unlike `run`/`ask` - see
+    README "Coding mode" for exactly what each CLI is allowed to do.
+    """
+    click.echo(f"Working in: {os.getcwd()}\n")
+    result = asyncio.run(code_mode.run(task))
+    click.echo("\n=== DONE ===\n")
     click.echo(result)
 
 
@@ -109,6 +151,7 @@ def tasks():
 @click.argument("question")
 def ask(question: str):
     """Ask every configured cloud model the same question, merge into one verdict."""
+    click.echo(f"Working in: {os.getcwd()}\n")
     fleet = build_fleet()
     store = ContextStore()
     result = asyncio.run(debate.run(question, fleet, store))
@@ -357,6 +400,84 @@ def settings_remove_host(name: str):
         click.echo(f"Removed host '{name}'.")
     else:
         click.echo(f"No host named '{name}'.")
+
+
+@settings.command("register-worker")
+@click.option("--model", default="qwen2.5-coder:7b", show_default=True, help="Model you have (or will) pull on THIS machine.")
+@click.option("--name", "host_name", default=None, help="Name to suggest for this host (default: this machine's hostname).")
+def settings_register_worker(model: str, host_name: str | None):
+    """Show what to run on the SUPERVISOR PC to add THIS machine as a worker.
+
+    This machine doesn't need the orchestrator installed at all as a
+    worker - just Ollama running. Run this here to get the exact
+    `settings add-host` command to paste on the other PC.
+    """
+    import socket as _socket
+
+    ip = network.local_ip()
+    name = host_name or _socket.gethostname().lower()
+    reachable = asyncio.run(network.ollama_reachable())
+
+    click.echo(f"This machine's LAN IP: {ip}")
+    click.echo(f"Ollama on :11434: {'reachable' if reachable else 'NOT reachable - is `ollama serve` running?'}")
+    click.echo(
+        "\nMake sure this machine and the supervisor PC are on the same network "
+        "(direct Ethernet cable or Tailscale - see README \"Networking two PCs\"), "
+        "then on the SUPERVISOR, run:\n"
+    )
+    click.echo(f"  orchestrator settings add-host {name} --url http://{ip}:11434 --model {model}")
+    click.echo(
+        "\nNever port-forward 11434 to the public internet - Ollama has no built-in auth."
+    )
+
+
+@settings.command("scan-network")
+@click.option("--port", default=11434, show_default=True, help="Port to probe (Ollama's default).")
+@click.option("--timeout", default=0.5, show_default=True, type=float, help="Per-host probe timeout, in seconds.")
+@click.option("--add/--no-add", default=False, help="Interactively register discovered machines as hosts.")
+def settings_scan_network(port: int, timeout: float, add: bool):
+    """Auto-scan the local network for other PCs running Ollama.
+
+    Sweeps every address on this machine's /24 subnet in parallel and
+    reports which ones answer like a real Ollama server, along with
+    whatever models they already have pulled - no need to know a worker
+    PC's IP ahead of time. Pass --add to register matches as hosts
+    interactively instead of just listing them.
+    """
+    ip = network.local_ip()
+    if ip == "127.0.0.1":
+        click.echo("Could not determine this machine's LAN IP - are you connected to a network?")
+        return
+    subnet = ip.rsplit(".", 1)[0] + ".0/24"
+    click.echo(f"Scanning {subnet} for Ollama workers on port {port}...")
+    found = asyncio.run(network.scan_for_workers(port=port, timeout=timeout))
+    if not found:
+        click.echo("No Ollama workers found on the local network.")
+        return
+
+    existing = {h.url for h in HostsStore().load()}
+    for w in found:
+        tag = " (already registered)" if w["url"] in existing else ""
+        models = ", ".join(w["models"]) or "(no models pulled)"
+        click.echo(f"  {w['url']:28} {models}{tag}")
+
+    if not add:
+        click.echo("\nRun again with --add to register these interactively, or:")
+        click.echo("  orchestrator settings add-host <name> --url <url> --model <model>")
+        return
+
+    for w in found:
+        if w["url"] in existing:
+            continue
+        if not click.confirm(f"\nRegister {w['url']} as a host?", default=True):
+            continue
+        default_name = w["ip"].replace(".", "-")
+        name = click.prompt("Host name", default=default_name)
+        default_model = w["models"][0] if w["models"] else ""
+        model = click.prompt("Model to use", default=default_model)
+        size = click.prompt("Size", default="standard", type=click.Choice(["small", "standard", "big"]))
+        HostsStore().add(HostConfig(name=name, url=w["url"], model=model, size=size))
+        click.echo(f"Registered '{name}' -> {model} @ {w['url']} (size={size})")
 
 
 @settings.command("add-cluster")

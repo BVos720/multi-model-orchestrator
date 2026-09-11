@@ -25,7 +25,10 @@ if (-not (Test-Path "$root\.venv")) {
     --console `
     scripts\entrypoint.py
 
+$orchestCliPath = Join-Path $root "dist\OrchestCLI.exe"
+Copy-Item "$root\dist\orchestrator.exe" $orchestCliPath -Force
 Write-Host "`nBuilt: $root\dist\orchestrator.exe" -ForegroundColor Cyan
+Write-Host "Also copied as: $orchestCliPath (identical binary, same thing, typed differently)" -ForegroundColor Cyan
 Write-Host "This .exe still needs .env / .orchestrator\ next to wherever you run it from" -ForegroundColor Cyan
 Write-Host "(same as the pip-installed version) - it bundles Python and the dependencies," -ForegroundColor Cyan
 Write-Host "not your config. Copy .env.example -> .env next to the .exe to get started." -ForegroundColor Cyan

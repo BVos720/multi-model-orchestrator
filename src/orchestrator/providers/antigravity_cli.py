@@ -31,6 +31,8 @@ class AntigravityCliAgent(Agent):
         tier: str = "planner",
         model: str | None = None,
         effort: str | None = None,
+        mode: str = "text",
+        timeout: float = 180.0,
     ):
         if shutil.which("agy") is None:
             raise RuntimeError(
@@ -41,6 +43,8 @@ class AntigravityCliAgent(Agent):
         self.tier = tier
         self.model = model  # a model slug, if you know a current one - optional
         self.effort = effort  # "low" | "medium" | "high" - documented, safer than guessing a model slug
+        self.mode = mode  # "text" (default, read-only) or "code" (used by `orchestrator code`)
+        self.timeout = timeout
 
     async def complete(self, prompt: str, system: str | None = None) -> str:
         args = ["agy", "-p", "--output-format", "text"]
@@ -48,6 +52,12 @@ class AntigravityCliAgent(Agent):
             args += ["--model", self.model]
         if self.effort:
             args += ["--effort", self.effort]
+        if self.mode == "code":
+            # No confirmed fine-grained "allow edits but not shell" flag for
+            # agy like Claude Code's --disallowedTools - this is coarser:
+            # every tool gets approved, not just file edits. Documented as
+            # such in `orchestrator code`'s help text.
+            args += ["--dangerously-skip-permissions"]
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
         args.append(full_prompt)
@@ -59,11 +69,11 @@ class AntigravityCliAgent(Agent):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            raise RuntimeError("agy CLI timed out after 180s.")
+            raise RuntimeError(f"agy CLI timed out after {self.timeout}s.")
         if proc.returncode != 0:
             err = stderr.decode(errors="replace")[:2000]
             if "authentication" in err.lower() or "auth" in err.lower():

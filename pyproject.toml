@@ -1,7 +1,7 @@
 [project]
-name = "multi-model-orchestrator"
+name = "orchestcli"
 version = "0.1.0"
-description = "Swarm orchestrator connecting Claude Code, Gemini, Ollama, and other models"
+description = "OrchestCLI - swarm orchestrator connecting Claude Code, Antigravity, Copilot, Ollama, and other models"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
@@ -17,6 +17,7 @@ build = ["pyinstaller>=6.0"]
 
 [project.scripts]
 orchestrator = "orchestrator.cli:main"
+orchestcli = "orchestrator.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

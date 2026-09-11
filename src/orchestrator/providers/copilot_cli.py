@@ -19,12 +19,26 @@ class CopilotCliAgent(Agent):
     and follow the device-code login prompt. After that, headless calls
     below reuse the cached credential.
 
-    Runs with no --allow-tool/--allow-all-tools granted, so it can't act on
-    the filesystem or shell - it only ever generates text here, mirroring
-    how ClaudeCodeAgent is locked to --permission-mode plan.
+    mode="text" (default, used everywhere in the swarm): no --allow-tool/
+    --allow-all-tools granted, so it can't act on the filesystem or shell -
+    it only ever generates text here, mirroring ClaudeCodeAgent's
+    --permission-mode plan.
+
+    mode="code" (only used by `orchestrator code`): adds --allow-all-tools
+    (every tool auto-approved, no per-call confirmation) - coarser than
+    Claude Code's Edit/Write-only allowance, since Copilot CLI's flags don't
+    confirmedly expose a "files but not shell" split the way disallowedTools
+    does. Documented as such in `orchestrator code`'s help text.
     """
 
-    def __init__(self, name: str = "copilot", tier: str = "planner", model: str | None = None):
+    def __init__(
+        self,
+        name: str = "copilot",
+        tier: str = "planner",
+        model: str | None = None,
+        mode: str = "text",
+        timeout: float = 180.0,
+    ):
         if shutil.which("copilot") is None:
             raise RuntimeError(
                 "`copilot` CLI not found on PATH. Install with: npm install -g @github/copilot"
@@ -32,11 +46,15 @@ class CopilotCliAgent(Agent):
         self.name = name
         self.tier = tier
         self.model = model  # e.g. "claude-sonnet-4.6", "gpt-5" - whatever your plan offers
+        self.mode = mode
+        self.timeout = timeout
 
     async def complete(self, prompt: str, system: str | None = None) -> str:
         args = ["copilot", "-p", "-s", "--no-ask-user"]
         if self.model:
             args += [f"--model={self.model}"]
+        if self.mode == "code":
+            args += ["--allow-all-tools"]
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
         args.append(full_prompt)
@@ -48,12 +66,13 @@ class CopilotCliAgent(Agent):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()  # reap it - avoid leaving a zombie/orphaned process behind
             raise RuntimeError(
-                "copilot CLI timed out after 180s - if this is the first call, run `copilot` "
-                "once yourself interactively to complete the GitHub device-code login."
+                f"copilot CLI timed out after {self.timeout}s - if this is the first call, run "
+                f"`copilot` once yourself interactively to complete the GitHub device-code login."
             )
         if proc.returncode != 0:
             err = stderr.decode(errors="replace")[:2000]

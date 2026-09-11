@@ -49,20 +49,27 @@ STEP_SYSTEM = (
     "your step, re-derive or re-check it yourself rather than repeating it."
 )
 
+# Substrings (lowercased) that show up across providers when a model/account
+# is genuinely out of capacity - as opposed to a transient network blip or a
+# real bug. Deliberately over-inclusive: a false positive here just offers a
+# switch the user can decline (or that auto-picks a reasonable fallback);
+# a false negative crashes the whole run instead, which is worse.
+QUOTA_ERROR_HINTS = (
+    "usage limit", "rate limit", "quota", "ineligibletier", "429",
+    "insufficient credit", "exceeded your current quota", "billing",
+    "resource_exhausted", "out of capacity", "credit balance",
+)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    return any(hint in str(exc).lower() for hint in QUOTA_ERROR_HINTS)
+
 
 def _parse_plan(raw: str) -> list[dict]:
     match = re.search(r"\[.*\]", raw, re.DOTALL)
     if not match:
         raise ValueError(f"Planner did not return a JSON list:\n{raw[:500]}")
     return json.loads(match.group(0))
-
-
-async def _complete(agent, prompt: str, decision, fleet: Fleet) -> str:
-    """Every step execution gets STEP_SYSTEM; the local pool additionally
-    gets a size preference when that's who's answering."""
-    if agent is fleet.local and decision.tier == "local":
-        return await agent.complete(prompt, system=STEP_SYSTEM, prefer_size=decision.size_hint)
-    return await agent.complete(prompt, system=STEP_SYSTEM)
 
 
 def _first_choice(decision_tier: str, fleet: Fleet, planner) -> tuple:
@@ -88,6 +95,7 @@ async def run(
     hooks: HookRegistry | None = None,
     local_bias: int | None = None,
     show_task_list: bool = True,
+    on_exhausted=None,
 ) -> str:
     """The core swarm loop: a heavy model plans, steps get routed to the
     cheapest capable tier (local Ollama pool first), local failures/thin
@@ -100,6 +108,15 @@ async def run(
     The plan itself is mirrored into a persisted, live-updated TaskRun
     (.orchestrator/tasks.json) - this *is* the "models keep a task list and
     divide work among themselves" list, printed as a checklist as it runs.
+
+    on_exhausted: optional async callback(exhausted_agent, error, candidates)
+    -> Agent | None, called when the planner hits what looks like a quota/
+    usage-limit error (not just any failure). Return the Agent to continue
+    with, or None to abort. If omitted, auto-picks the first candidate
+    (another planner, then cloud-fast, then local) and prints what it chose
+    - this is what makes a `run` that outlives one model's quota rather than
+    just crashing. The swap is sticky: once switched, later steps/the final
+    review use the new planner too, not just the one call that failed.
     """
     if local_bias is None:
         local_bias = int(os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS)))
@@ -108,7 +125,35 @@ async def run(
     planner = fleet.planners[0]
     tasks = TaskListStore()
 
-    plan_raw = await planner.complete(task, system=PLAN_SYSTEM)
+    async def call_planner(prompt: str, system: str) -> tuple[str, object]:
+        """Try the current planner; on a quota-shaped error, swap to a
+        fallback (offered via on_exhausted, or auto-picked) and retry.
+        Returns (result, agent_that_actually_answered)."""
+        nonlocal planner
+        try:
+            return await planner.complete(prompt, system=system), planner
+        except Exception as e:
+            if not _is_quota_error(e):
+                raise
+            candidates = [a for a in fleet.planners if a is not planner]
+            candidates += list(fleet.cloud_fast)
+            if fleet.local:
+                candidates.append(fleet.local)
+
+            if on_exhausted:
+                choice = await on_exhausted(planner, e, candidates)
+            elif candidates:
+                choice = candidates[0]
+                print(f"! {planner.name} looks out of capacity ({e}) - continuing with {choice.name}.")
+            else:
+                choice = None
+
+            if choice is None:
+                raise
+            planner = choice
+            return await planner.complete(prompt, system=system), planner
+
+    plan_raw, _ = await call_planner(task, PLAN_SYSTEM)
     store.add(planner.name, "plan", plan_raw)
     steps = _parse_plan(plan_raw)[:max_steps]
 
@@ -147,11 +192,13 @@ async def run(
             f"Now do step {i}: {desc}"
         )
         try:
-            result = await _complete(agent, step_prompt, decision, fleet)
+            if agent is fleet.local and decision.tier == "local":
+                result = await agent.complete(step_prompt, system=STEP_SYSTEM, prefer_size=decision.size_hint)
+            else:
+                result = await agent.complete(step_prompt, system=STEP_SYSTEM)
         except Exception:
             if agent is not planner:
-                agent = planner  # local/cloud-fast unreachable or unhealthy -> escalate
-                result = await _complete(agent, step_prompt, decision, fleet)
+                result, agent = await call_planner(step_prompt, STEP_SYSTEM)  # local/cloud-fast down -> escalate
                 used_fallback = True
             else:
                 item.status = "failed"
@@ -160,8 +207,7 @@ async def run(
 
         result = await hooks.run_post_step(desc, dispatch_tier, result)
         if "ORCHESTRATOR_ESCALATE" in result and agent is not planner:
-            agent = planner
-            result = await _complete(agent, step_prompt, decision, fleet)
+            result, agent = await call_planner(step_prompt, STEP_SYSTEM)
             used_fallback = True
 
         tag = f"{dispatch_tier}{'->escalated' if used_fallback else ''}"
@@ -181,6 +227,6 @@ async def run(
     tasks.save(task_run)
 
     final_prompt = f"Task: {task}\n\nWork log:\n{store.transcript()}"
-    final = await planner.complete(final_prompt, system=REVIEW_SYSTEM)
+    final, _ = await call_planner(final_prompt, REVIEW_SYSTEM)
     store.add(planner.name, "review", final)
     return final
