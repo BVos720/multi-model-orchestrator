@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 
 from ..config import Fleet
 from ..context_store import ContextStore
 from ..hooks import HookRegistry, default_registry
-from ..router import route_step
+from ..router import DEFAULT_BIAS, route_step
+from ..task_list_store import TaskItem, TaskListStore, TaskRun, render
 
 PLAN_SYSTEM = (
     "You are the planning agent in a multi-model coding swarm. Break the "
@@ -41,23 +43,53 @@ async def run(
     store: ContextStore,
     max_steps: int = 12,
     hooks: HookRegistry | None = None,
+    local_bias: int | None = None,
+    show_task_list: bool = True,
 ) -> str:
     """The core swarm loop: a heavy model plans, steps get routed to the
     cheapest capable tier (local Ollama pool first), local failures/thin
     output escalate back to a heavy model, and a heavy model reviews
     everything into one final answer. Every step is written to the shared,
     persisted, auto-compacted ContextStore so agents can see each other's work.
+
+    local_bias (0-10): None reads the persisted default (env LOCAL_BIAS,
+    settable via `orchestrator settings bias` / the menu's balance screen).
+    The plan itself is mirrored into a persisted, live-updated TaskRun
+    (.orchestrator/tasks.json) - this *is* the "models keep a task list and
+    divide work among themselves" list, printed as a checklist as it runs.
     """
+    if local_bias is None:
+        local_bias = int(os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS)))
+
     hooks = hooks or default_registry()
     planner = fleet.planners[0]
+    tasks = TaskListStore()
 
     plan_raw = await planner.complete(task, system=PLAN_SYSTEM)
     store.add(planner.name, "plan", plan_raw)
     steps = _parse_plan(plan_raw)[:max_steps]
 
+    task_run = TaskRun(
+        task=task,
+        items=[
+            TaskItem(id=i, description=s.get("step", ""), complexity=s.get("complexity"))
+            for i, s in enumerate(steps, 1)
+        ],
+    )
+    tasks.save(task_run)
+    if show_task_list:
+        print(render(task_run))
+
     for i, step in enumerate(steps, 1):
+        item = task_run.items[i - 1]
         desc = step.get("step", "")
-        decision = route_step(desc, step.get("complexity"))
+        decision = route_step(desc, step.get("complexity"), local_bias=local_bias)
+        item.tier = decision.tier
+        item.status = "running"
+        tasks.save(task_run)
+        if show_task_list:
+            print(render(task_run))
+
         await hooks.run_pre_step(desc)
 
         agent = fleet.local if decision.tier == "local" and fleet.local else planner
@@ -76,6 +108,8 @@ async def run(
                 result = await agent.complete(step_prompt)
                 used_fallback = True
             else:
+                item.status = "failed"
+                tasks.save(task_run)
                 raise
 
         result = await hooks.run_post_step(desc, decision.tier, result)
@@ -87,8 +121,18 @@ async def run(
         tag = f"{decision.tier}{'->escalated' if used_fallback else ''}"
         store.add(agent.name, f"step-{i}:{tag}", result)
 
+        item.status = "escalated" if used_fallback else "done"
+        item.assigned_agent = agent.name
+        item.result_preview = result[:200]
+        tasks.save(task_run)
+        if show_task_list:
+            print(render(task_run))
+
         if fleet.local and store.needs_compaction():
             await store.compact(summarizer=fleet.local)
+
+    task_run.finished = True
+    tasks.save(task_run)
 
     final_prompt = f"Task: {task}\n\nWork log:\n{store.transcript()}"
     final = await planner.complete(final_prompt, system=REVIEW_SYSTEM)

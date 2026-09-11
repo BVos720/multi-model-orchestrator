@@ -7,17 +7,34 @@ import sys
 
 import click
 
+from .actions import add_account, resolve_agent, save_first_account, save_gemini_key
 from .config import build_fleet
 from .context_store import ContextStore
 from .env_store import set_env_var
 from .hosts_store import HostConfig, HostsStore
+from .menu import main_menu
 from .modes import debate, plan_execute
-from .settings_store import PRESETS, ProviderConfig, SettingsStore
+from .router import DEFAULT_BIAS
+from .settings_store import PRESETS, SettingsStore
+from .task_list_store import TaskListStore, render
 
 
-@click.group()
-def main():
-    """Multi-model orchestrator: Claude Code + Gemini + Ollama (+ others), working together."""
+@click.group(invoke_without_command=True)
+@click.pass_context
+def main(ctx: click.Context):
+    """Multi-model orchestrator: Claude Code + Gemini + Ollama (+ others), working together.
+
+    Run with no arguments for an interactive arrow-key menu. Every action
+    below is also a direct command, for scripting/automation.
+    """
+    if ctx.invoked_subcommand is None:
+        main_menu()
+
+
+@main.command()
+def menu():
+    """Launch the interactive menu (same as running `orchestrator` with no arguments)."""
+    main_menu()
 
 
 def _pick_local_hosts(explicit: str | None) -> list[str] | None:
@@ -56,13 +73,25 @@ def _pick_local_hosts(explicit: str | None) -> list[str] | None:
 @click.argument("task")
 @click.option("--max-steps", default=12, show_default=True, help="Cap on plan steps to execute.")
 @click.option("--local", "local_choice", default=None, help="Registered host name, comma-list, or 'all'. Prompts if omitted and >1 host is registered.")
-def run(task: str, max_steps: int, local_choice: str | None):
+@click.option("--bias", "bias", type=click.IntRange(0, 10), default=None, help="Local<->cloud balance for this run only (0=always cloud, 10=always local first). Defaults to the persisted setting.")
+def run(task: str, max_steps: int, local_choice: str | None, bias: int | None):
     """Plan with a heavy model, execute steps (local model first, escalate on complexity)."""
     fleet = build_fleet(local_hosts=_pick_local_hosts(local_choice))
     store = ContextStore()
-    result = asyncio.run(plan_execute.run(task, fleet, store, max_steps=max_steps))
+    result = asyncio.run(plan_execute.run(task, fleet, store, max_steps=max_steps, local_bias=bias))
     click.echo("\n=== FINAL RESULT ===\n")
     click.echo(result)
+
+
+@main.command()
+def tasks():
+    """Show the task list (plan) from the current/last run, with live status per step."""
+    task_run = TaskListStore().load()
+    if not task_run:
+        click.echo("No task list yet - run `orchestrator run \"...\"` first.")
+        return
+    click.echo(render(task_run))
+    click.echo("\n(finished)" if task_run.finished else "\n(in progress or interrupted)")
 
 
 @main.command()
@@ -83,6 +112,7 @@ def status():
     click.echo(f"Planners: {[a.name for a in fleet.planners]}")
     click.echo(f"Cloud:    {[a.name for a in fleet.cloud]}")
     click.echo(f"Local:    {fleet.local.name + ' ' + str([h.name for h in fleet.local.hosts]) if fleet.local else 'none'}")
+    click.echo(f"Bias:     {os.environ.get('LOCAL_BIAS', str(DEFAULT_BIAS))}/10 (0=max cloud precision, 10=max local savings)")
 
 
 @main.command()
@@ -109,6 +139,10 @@ def settings_list():
         click.echo(f"  {'gemini':12} ok (GEMINI_API_KEY)")
     else:
         click.echo(f"  {'gemini':12} not configured - see `orchestrator settings add gemini`")
+    if shutil.which("copilot"):
+        click.echo(f"  {'copilot':12} ok (GitHub account login via copilot CLI)")
+    else:
+        click.echo(f"  {'copilot':12} not installed - see `orchestrator settings add copilot`")
 
     hosts = HostsStore().load()
     if hosts:
@@ -122,9 +156,25 @@ def settings_list():
     if not custom:
         click.echo("  (none - try `orchestrator settings presets` then `settings add <name>`)")
     for p in custom:
-        has_key = "ok" if os.environ.get(p.api_key_env) else "MISSING KEY"
         free_tag = "free" if PRESETS.get(p.name, {}).get("free") else "paid"
-        click.echo(f"  {p.name:12} model={p.model:32} tier={p.tier:8} [{free_tag}] key={p.api_key_env} [{has_key}]")
+        click.echo(f"  {p.name:12} model={p.model:32} tier={p.tier:8} [{free_tag}] {len(p.accounts)} account(s):")
+        for a in p.accounts:
+            has_key = "ok" if os.environ.get(a.api_key_env) else "MISSING KEY"
+            click.echo(f"      {a.label:12} key={a.api_key_env} [{has_key}]")
+
+
+@settings.command("bias")
+@click.argument("level", type=click.IntRange(0, 10), required=False)
+def settings_bias(level: int | None):
+    """Show, or persist, the local<->cloud balance (0=always escalate to
+    cloud, 10=always try local first). `orchestrator run --bias N` overrides
+    this for a single run without changing the saved default."""
+    if level is None:
+        current = os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS))
+        click.echo(f"Current local/cloud balance: {current}/10 (0=max cloud precision, 10=max local savings)")
+        return
+    set_env_var("LOCAL_BIAS", str(level))
+    click.echo(f"Saved - local/cloud balance set to {level}/10.")
 
 
 @settings.command("presets")
@@ -144,7 +194,9 @@ def settings_presets():
         click.echo(f"{tag}  {name:12}  {cfg['model']:38} {urls.get(name, '')}")
     click.echo(
         "\nFree ones need no card and have real (if rate-limited) standing free "
-        "tiers as of writing - see README for sources. `orchestrator settings add <name>`."
+        "tiers as of writing - see README for sources. `orchestrator settings add <name>`.\n"
+        "Have more than one account for a provider? `orchestrator settings add-account <name>` "
+        "pools them - round-robin, failover on rate limits."
     )
 
 
@@ -159,58 +211,80 @@ def settings_presets():
 @click.option("--base-url", default=None, help="Required with --preset custom.")
 @click.option("--model", default=None, help="Required with --preset custom.")
 @click.option("--tier", type=click.Choice(["planner", "cloud", "local"]), default=None)
-def settings_add(name: str, preset: str | None, base_url: str | None, model: str | None, tier: str | None):
-    """Add/configure an agent, e.g.: orchestrator settings add deepseek
+@click.option("--label", default="default", help="Account label, if you'll add more accounts for this provider later.")
+def settings_add(name: str, preset: str | None, base_url: str | None, model: str | None, tier: str | None, label: str):
+    """Add a new agent (its first account), e.g.: orchestrator settings add deepseek
+
+    Already added this provider and want a second account (e.g. two Groq
+    signups, to pool their rate limits)? Use `settings add-account` instead.
 
     NAME "gemini" is special-cased to just set GEMINI_API_KEY - prefer
     `npm install -g @google/gemini-cli && gemini` instead, which needs no key.
+    NAME "copilot" is special-cased too - prefer `npm install -g @github/copilot
+    && copilot` (GitHub account login), no key needed either.
     Anything else is added as an OpenAI-compatible agent via .env + providers.json.
     """
-    if name == "gemini":
-        if shutil.which("gemini"):
-            click.echo(
-                "gemini CLI is already installed - run `gemini` once to log in with your "
-                "Google account and you won't need an API key at all. Continuing to set "
-                "GEMINI_API_KEY anyway as a fallback."
-            )
-        key = click.prompt("GEMINI_API_KEY (input hidden)", hide_input=True)
-        set_env_var("GEMINI_API_KEY", key)
-        click.echo("Saved GEMINI_API_KEY to .env")
+    if name in ("gemini", "copilot"):
+        cli_name = "gemini" if name == "gemini" else "copilot"
+        if shutil.which(cli_name):
+            click.echo(f"{cli_name} CLI is already installed and preferred - no key needed once you're logged in.")
+            return
+        click.echo(f"{cli_name} CLI not found. GEMINI_API_KEY-style key fallback isn't offered for '{name}'.")
         return
 
-    preset_cfg = PRESETS.get(preset or name, {})
-    resolved_base_url = base_url or preset_cfg.get("base_url")
-    resolved_model = model or preset_cfg.get("model")
-    resolved_tier = tier or preset_cfg.get("tier", "cloud")
-
-    if not resolved_base_url or not resolved_model:
+    if SettingsStore().get(name):
         raise click.UsageError(
-            f"Unknown preset for '{name}'. Pass --preset custom --base-url ... --model ..., "
-            f"or use a known preset: {', '.join(PRESETS)}"
+            f"'{name}' is already registered. Use `orchestrator settings add-account {name}` "
+            f"to add another account to it instead."
         )
 
-    api_key_env = f"{name.upper().replace('-', '_')}_API_KEY"
-    key = click.prompt(f"{api_key_env} (input hidden)", hide_input=True)
-    set_env_var(api_key_env, key)
+    try:
+        resolved = resolve_agent(name, preset, base_url, model, tier)
+    except ValueError as e:
+        raise click.UsageError(str(e))
 
-    SettingsStore().add(
-        ProviderConfig(
-            name=name, base_url=resolved_base_url, model=resolved_model, tier=resolved_tier, api_key_env=api_key_env
-        )
-    )
-    free_note = "free tier" if preset_cfg.get("free") else "paid - billed on your own key"
+    key = click.prompt(f"API key for '{name}' account '{label}' (input hidden)", hide_input=True)
+    env_var = save_first_account(resolved, label, key)
+    free_note = "free tier" if resolved.free else "paid - billed on your own key"
     click.echo(
-        f"Added agent '{name}' (model={resolved_model}, tier={resolved_tier}, {free_note}). "
-        f"Key saved to .env as {api_key_env}."
+        f"Added agent '{resolved.name}' (model={resolved.model}, tier={resolved.tier}, {free_note}). "
+        f"Key saved to .env as {env_var}."
     )
+
+
+@settings.command("add-account")
+@click.argument("name")
+@click.option("--label", required=True, help="A short label for this account, e.g. 'personal', 'acct2'.")
+def settings_add_account(name: str, label: str):
+    """Add another account to an already-registered provider, e.g.:
+
+    orchestrator settings add-account groq --label personal
+    orchestrator settings add-account groq --label work
+
+    Pools the keys: round-robins between accounts and fails over to the
+    next one if an account errors or hits its rate limit.
+    """
+    key = click.prompt(f"API key for '{name}' account '{label}' (input hidden)", hide_input=True)
+    try:
+        env_var = add_account(name, label, key)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+    click.echo(f"Added account '{label}' to '{name}'. Key saved to .env as {env_var}.")
 
 
 @settings.command("remove")
 @click.argument("name")
-def settings_remove(name: str):
-    """Remove a custom agent (built-in ones are removed by unsetting their key/CLI instead)."""
+@click.option("--label", default=None, help="Remove just this one account instead of the whole agent.")
+def settings_remove(name: str, label: str | None):
+    """Remove a custom agent, or just one of its accounts with --label."""
+    if label:
+        if SettingsStore().remove_account(name, label):
+            click.echo(f"Removed account '{label}' from '{name}'.")
+        else:
+            click.echo(f"No account '{label}' on '{name}'.")
+        return
     if SettingsStore().remove(name):
-        click.echo(f"Removed '{name}'.")
+        click.echo(f"Removed '{name}' (all accounts).")
     else:
         click.echo(f"No custom agent named '{name}'.")
 

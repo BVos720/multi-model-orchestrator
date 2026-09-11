@@ -32,6 +32,36 @@ def test_ambiguous_long_step_defaults_cloud():
     assert decision.tier == "cloud"
 
 
+def test_bias_zero_forces_cloud_even_for_declared_low():
+    # deliberately no simple/complex keyword hit and >8 words, so only the
+    # declared "low" complexity would normally route this local - bias=0
+    # should override that and escalate anyway.
+    desc = "Add a getter method for the internal cache field used by the session manager"
+    decision = route_step(desc, declared_complexity="low", local_bias=0)
+    assert decision.tier == "cloud"
+
+
+def test_bias_ten_tries_local_even_for_declared_high():
+    decision = route_step("Refactor the whole module", declared_complexity="high", local_bias=10)
+    assert decision.tier == "local"
+
+
+def test_bias_ten_still_escalates_complex_keyword():
+    decision = route_step("Design the overall architecture", local_bias=10)
+    assert decision.tier == "cloud"
+
+
+def test_security_step_escalates_regardless_of_bias():
+    decision = route_step("Check for security issues in this tiny snippet", local_bias=9)
+    assert decision.tier == "cloud"
+
+
+def test_higher_bias_widens_the_simple_word_threshold():
+    medium_desc = " ".join(["word"] * 30)  # over the default threshold (25), under a high-bias one
+    assert route_step(medium_desc, local_bias=5).tier == "cloud"
+    assert route_step(medium_desc, local_bias=8).tier == "local"
+
+
 if __name__ == "__main__":
     import traceback
 

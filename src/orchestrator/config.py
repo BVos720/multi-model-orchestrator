@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from .providers.base import Agent
 from .providers.claude_code import ClaudeCodeAgent
+from .providers.copilot_cli import CopilotCliAgent
 from .providers.gemini import GeminiAgent
 from .providers.gemini_cli import GeminiCliAgent
 from .providers.ollama import OllamaAgent
@@ -58,13 +59,27 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
             "with your Google account (no key needed), or set GEMINI_API_KEY in .env"
         )
 
-    for p in SettingsStore().load():
-        key = os.environ.get(p.api_key_env)
-        if not key:
-            print(f"! {p.name}: {p.api_key_env} not set - run `orchestrator settings add {p.name}`")
-            continue
+    if shutil.which("copilot"):
         try:
-            agent = OpenAICompatAgent(name=p.name, tier=p.tier, api_key=key, base_url=p.base_url, model=p.model)
+            planners.append(CopilotCliAgent(name="copilot", tier="planner"))
+        except Exception as e:
+            print(f"! Copilot CLI agent unavailable - {e}")
+    else:
+        print(
+            "! No GitHub Copilot access - `npm install -g @github/copilot` and log in "
+            "with your GitHub account (needs a Copilot plan; no separate API key)"
+        )
+
+    for p in SettingsStore().load():
+        keys = [k for k in (os.environ.get(a.api_key_env) for a in p.accounts) if k]
+        missing = len(p.accounts) - len(keys)
+        if not keys:
+            print(f"! {p.name}: no account has a key set - run `orchestrator settings add {p.name}`")
+            continue
+        if missing:
+            print(f"! {p.name}: {missing} account(s) missing their key, pooling the other {len(keys)}")
+        try:
+            agent = OpenAICompatAgent(name=p.name, tier=p.tier, base_url=p.base_url, model=p.model, api_keys=keys)
             (planners if p.tier == "planner" else cloud).append(agent)
         except Exception as e:
             print(f"! {p.name} agent unavailable - {e}")

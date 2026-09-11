@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 PROVIDERS_FILE = Path(".orchestrator") / "providers.json"
@@ -55,21 +55,31 @@ PRESETS: dict[str, dict] = {
 
 
 @dataclass
+class ProviderAccount:
+    """One credential for a provider. Multiple accounts on the same free
+    tier (e.g. two Groq signups) let the pool round-robin/failover between
+    them - each one's own rate limit, combined."""
+
+    label: str
+    api_key_env: str  # name of the .env variable holding this account's key
+
+
+@dataclass
 class ProviderConfig:
     name: str
     base_url: str
     model: str
     tier: str = "cloud"
-    api_key_env: str = ""  # name of the .env variable holding the secret
+    accounts: list[ProviderAccount] = field(default_factory=list)
 
 
 class SettingsStore:
     """Custom OpenAI-compatible agents added via `orchestrator settings`.
 
     Only non-secret metadata lives here (name/base_url/model/tier/which env
-    var to read). The actual API key always goes to .env instead, via
-    env_store.set_env_var - this file is safe to read/print/commit-ignore
-    without worrying about leaking a key.
+    vars hold each account's secret). The actual API keys always go to .env
+    instead, via env_store.set_env_var - this file is safe to read/print/
+    commit-ignore without worrying about leaking a key.
     """
 
     def __init__(self, path: Path = PROVIDERS_FILE):
@@ -79,18 +89,64 @@ class SettingsStore:
         if not self.path.exists():
             return []
         raw = json.loads(self.path.read_text(encoding="utf-8") or "[]")
-        return [ProviderConfig(**p) for p in raw]
+        providers = []
+        for p in raw:
+            if "accounts" not in p and "api_key_env" in p:
+                # old single-key shape - migrate transparently on read
+                p = {**p, "accounts": [{"label": "default", "api_key_env": p.pop("api_key_env")}]}
+            providers.append(
+                ProviderConfig(
+                    name=p["name"],
+                    base_url=p["base_url"],
+                    model=p["model"],
+                    tier=p.get("tier", "cloud"),
+                    accounts=[ProviderAccount(**a) for a in p.get("accounts", [])],
+                )
+            )
+        return providers
 
     def _save(self, providers: list[ProviderConfig]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps([asdict(p) for p in providers], indent=2), encoding="utf-8")
 
-    def add(self, config: ProviderConfig) -> None:
+    def get(self, name: str) -> ProviderConfig | None:
+        for p in self.load():
+            if p.name == name:
+                return p
+        return None
+
+    def add_provider(self, config: ProviderConfig) -> None:
+        """Create (or fully replace) a provider entry - used for the first account."""
         providers = [p for p in self.load() if p.name != config.name]
         providers.append(config)
         self._save(providers)
 
+    def add_account(self, name: str, account: ProviderAccount) -> bool:
+        """Append another account to an already-registered provider.
+        Returns False if `name` isn't registered yet (create it first)."""
+        providers = self.load()
+        for p in providers:
+            if p.name == name:
+                p.accounts = [a for a in p.accounts if a.label != account.label] + [account]
+                self._save(providers)
+                return True
+        return False
+
+    def remove_account(self, name: str, label: str) -> bool:
+        """Remove one account. Drops the whole provider if that was its last account."""
+        providers = self.load()
+        for p in providers:
+            if p.name == name:
+                before = len(p.accounts)
+                p.accounts = [a for a in p.accounts if a.label != label]
+                if not p.accounts:
+                    providers = [x for x in providers if x.name != name]
+                self._save(providers)
+                return len(p.accounts) != before or name not in [x.name for x in providers]
+        return False
+
     def remove(self, name: str) -> bool:
+        """Remove a provider entirely, all its accounts included."""
         providers = self.load()
         kept = [p for p in providers if p.name != name]
         self._save(kept)
