@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from .. import usage_tracker
 from ..hosts_store import HostConfig
 from .base import Agent
 
@@ -99,12 +100,14 @@ class OllamaAgent(Agent):
         h.consecutive_failures = 0
         h.cooldown_until = 0.0
 
-    async def complete(self, prompt: str, system: str | None = None, prefer_size: str | None = None) -> str:
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-
+    async def _dispatch(self, build_body, prefer_size: str | None = None) -> dict:
+        """Shared host-selection/retry/failover loop - the actual pooling
+        logic behind complete(); split out so raw_chat() (tool-calling,
+        used by local_coder's agentic file-editing loop) doesn't have to
+        duplicate it. build_body(host) returns this call's JSON body for
+        that host (so the right host.model gets substituted in unless
+        overridden) - returns Ollama's raw parsed JSON response, from
+        whichever host actually served it."""
         deadline = time.time() + self.wait_timeout
         last_error: Exception | None = None
 
@@ -119,14 +122,10 @@ class OllamaAgent(Agent):
                         continue  # this host is at its concurrency limit - try the next one
                     async with sem:
                         try:
-                            resp = await client.post(
-                                f"{host.url}/api/chat",
-                                json={"model": host.model, "messages": messages, "stream": False},
-                            )
+                            resp = await client.post(f"{host.url}/api/chat", json=build_body(host))
                             resp.raise_for_status()
                             self._note_success(host)
-                            data = resp.json()
-                            return data.get("message", {}).get("content", "").strip()
+                            return resp.json()
                         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
                             self._note_failure(host)
                             last_error = e
@@ -141,3 +140,42 @@ class OllamaAgent(Agent):
                         f"All busy or unhealthy. Last error: {last_error}"
                     )
                 await asyncio.sleep(1)
+
+    async def complete(self, prompt: str, system: str | None = None, prefer_size: str | None = None) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        data = await self._dispatch(
+            lambda host: {"model": host.model, "messages": messages, "stream": False}, prefer_size
+        )
+        usage_tracker.record(self.name, data.get("prompt_eval_count"), data.get("eval_count"))
+        return data.get("message", {}).get("content", "").strip()
+
+    async def raw_chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+        prefer_size: str | None = None,
+    ) -> dict:
+        """Like complete(), but returns Ollama's raw response dict (so a
+        caller can see message.tool_calls, not just the text content) and
+        takes a full `messages` list plus optional `tools` - what
+        local_coder's agentic file-editing loop needs for real tool-use,
+        instead of the plain text-completion every other caller gets.
+
+        model, if given, overrides whichever host's own configured model
+        for this call only (e.g. force a bigger local model for more
+        reliable tool-calling, accepting it'll be slower per call) -
+        falls back to the picked host's normal model otherwise."""
+
+        def build_body(host):
+            body = {"model": model or host.model, "messages": messages, "stream": False}
+            if tools:
+                body["tools"] = tools
+            return body
+
+        data = await self._dispatch(build_body, prefer_size)
+        usage_tracker.record(self.name, data.get("prompt_eval_count"), data.get("eval_count"))
+        return data

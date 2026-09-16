@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 
+from .. import usage_tracker
 from .base import Agent
 
 
@@ -40,17 +42,38 @@ class ClaudeCodeAgent(Agent):
         self.timeout = timeout
         self.mode = mode
 
-    async def complete(self, prompt: str, system: str | None = None) -> str:
+    async def complete(self, prompt: str, system: str | None = None, continue_session: bool = False) -> str:
+        """continue_session=True keeps this cwd's real Claude Code session
+        alive across calls (via --continue) instead of the isolated,
+        memoryless one-shot every swarm step uses - what makes repeated
+        `orchest code` calls in the menu's loop actually feel like a normal
+        interactive `claude` session (it remembers earlier turns/edits),
+        rather than each prompt starting from a blank slate. Only meaningful
+        with mode="code"; --continue is a no-op-safe first call too (starts
+        fresh if there's nothing yet to continue).
+
+        --output-format json (not "text") is deliberate: it's the only way
+        to get real token/cost usage back (see usage_tracker), and it still
+        carries the plain answer in its "result" field.
+
+        Argument order below is load-bearing, not cosmetic: --disallowedTools
+        takes a value list and (confirmed empirically) greedily swallows
+        EVERY following bare word - including the prompt itself - unless
+        another recognized --flag immediately follows it. --continue /
+        --no-session-persistence are what stop that here; if you ever
+        reorder these args, --disallowedTools must still be immediately
+        followed by another --flag, never left as the last flag before the
+        positional prompt."""
         if self.mode == "code":
             args = [
-                "claude", "-p", "--output-format", "text",
+                "claude", "-p", "--output-format", "json",
                 "--permission-mode", "acceptEdits",
                 "--disallowedTools", "Bash,NotebookEdit",
-                "--no-session-persistence",
             ]
+            args.append("--continue" if continue_session else "--no-session-persistence")
         else:
             args = [
-                "claude", "-p", "--output-format", "text",
+                "claude", "-p", "--output-format", "json",
                 "--permission-mode", "plan",
                 "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
                 "--no-session-persistence",
@@ -75,4 +98,21 @@ class ClaudeCodeAgent(Agent):
             raise RuntimeError(f"claude CLI timed out after {self.timeout}s and was killed.")
         if proc.returncode != 0:
             raise RuntimeError(f"claude CLI failed: {stderr.decode(errors='replace')[:2000]}")
-        return stdout.decode(errors="replace").strip()
+
+        try:
+            data = json.loads(stdout.decode(errors="replace"))
+        except json.JSONDecodeError:
+            # Fall back to treating stdout as the plain answer - safer than
+            # crashing a whole run over a usage-tracking nicety if some
+            # future CLI version's --output-format=json output ever changes
+            # shape unexpectedly.
+            return stdout.decode(errors="replace").strip()
+
+        usage = data.get("usage") or {}
+        input_tokens = (
+            (usage.get("input_tokens") or 0)
+            + (usage.get("cache_creation_input_tokens") or 0)
+            + (usage.get("cache_read_input_tokens") or 0)
+        )
+        usage_tracker.record(self.name, input_tokens, usage.get("output_tokens"), data.get("total_cost_usd"))
+        return str(data.get("result", "")).strip()

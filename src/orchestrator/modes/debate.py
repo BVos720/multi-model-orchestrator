@@ -4,6 +4,7 @@ import asyncio
 
 from ..config import Fleet
 from ..context_store import ContextStore
+from ..project_context import with_project_context
 
 JUDGE_SYSTEM = (
     "Multiple models independently answered the same question. Compare their "
@@ -20,7 +21,8 @@ async def run(question: str, fleet: Fleet, store: ContextStore) -> str:
     if len(panel) < 2:
         raise RuntimeError("Debate mode needs at least 2 cloud/planner agents configured.")
 
-    answers = await asyncio.gather(*(a.complete(question) for a in panel), return_exceptions=True)
+    prompt = with_project_context(question)
+    answers = await asyncio.gather(*(a.complete(prompt) for a in panel), return_exceptions=True)
 
     bundle_parts = []
     for agent, answer in zip(panel, answers):

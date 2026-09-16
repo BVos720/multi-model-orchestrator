@@ -27,6 +27,8 @@ from .menu import main_menu
 from .modes import code as code_mode
 from .modes import debate, plan_execute
 from . import network
+from .project_context import clear_project_context, load_project_context, project_context_path, save_project_context
+from . import usage_tracker
 from .router import DEFAULT_BIAS
 from .settings_store import PRESETS, SettingsStore
 from .task_list_store import TaskListStore, render
@@ -83,25 +85,48 @@ def _pick_local_hosts(explicit: str | None) -> list[str] | None:
 
 
 async def _on_exhausted(failed_agent, error, candidates):
-    """When a planner looks out of quota mid-run: ask which agent to
-    continue with (interactive), or auto-pick the first candidate and say
-    so (non-interactive/scripted use) instead of just crashing the run."""
+    """When a planner looks out of quota mid-run and another candidate is
+    available: ask whether to switch, wait specifically for this one to
+    recover, or abort (interactive) - or auto-switch to the first candidate
+    (non-interactive/scripted use) instead of just crashing the run."""
     if not candidates:
         return None
     if not sys.stdin.isatty():
         click.echo(f"! {failed_agent.name} looks out of capacity - continuing with {candidates[0].name}.")
         return candidates[0]
     click.echo(f"\n! {failed_agent.name} looks out of capacity: {error}")
-    click.echo("Continue with a different model?")
     for i, a in enumerate(candidates, 1):
-        click.echo(f"  {i}. {a.name}")
-    click.echo(f"  {len(candidates) + 1}. abort")
+        click.echo(f"  {i}. switch to {a.name}")
+    wait_idx = len(candidates) + 1
+    abort_idx = len(candidates) + 2
+    click.echo(f"  {wait_idx}. wait for {failed_agent.name} to recover instead of switching")
+    click.echo(f"  {abort_idx}. abort")
     choice = click.prompt("Choice", default="1")
     try:
         idx = int(choice)
-        return None if idx == len(candidates) + 1 else candidates[idx - 1]
+        if idx == wait_idx:
+            return "wait"
+        if idx == abort_idx:
+            return None
+        return candidates[idx - 1]
     except (ValueError, IndexError):
         return None
+
+
+async def _on_all_exhausted(planners, error):
+    """Every planner is out of capacity at once, nothing left to switch to:
+    ask whether to wait for any one of them or all of them (interactive) -
+    or default to "any" (non-interactive/scripted use), since waiting
+    beats crashing a run over a rate limit likely to lift on its own."""
+    if not sys.stdin.isatty():
+        click.echo(f"! Every planner is out of capacity ({error}) - waiting for any of them to recover.")
+        return "any"
+    click.echo(f"\n! Every planner is out of capacity: {error}")
+    click.echo("  1. wait for ANY of them to recover")
+    click.echo("  2. wait for ALL of them to recover")
+    click.echo("  3. abort")
+    choice = click.prompt("Choice", default="1")
+    return {"1": "any", "2": "all", "3": None}.get(choice, "any")
 
 
 @main.command()
@@ -115,22 +140,42 @@ def run(task: str, max_steps: int, local_choice: str | None, bias: int | None):
     fleet = build_fleet(local_hosts=_pick_local_hosts(local_choice))
     store = ContextStore()
     result = asyncio.run(
-        plan_execute.run(task, fleet, store, max_steps=max_steps, local_bias=bias, on_exhausted=_on_exhausted)
+        plan_execute.run(
+            task, fleet, store, max_steps=max_steps, local_bias=bias,
+            on_exhausted=_on_exhausted, on_all_exhausted=_on_all_exhausted,
+        )
     )
     click.echo("\n=== FINAL RESULT ===\n")
     click.echo(result)
 
 
 @main.command()
-@click.argument("task")
-def code(task: str):
+@click.argument("task", required=False)
+@click.option(
+    "--interactive", is_flag=True, default=False,
+    help="Hand off to a REAL interactive CLI session (full permissions incl. Bash, gated by its own "
+    "prompts) instead of the default headless mode (edits auto-accepted, Bash disallowed, no prompts).",
+)
+def code(task: str | None, interactive: bool):
     """Actually edit/write files - like calling Claude Code directly, but
     auto-picking whichever of Claude Code / Antigravity CLI / Copilot CLI
     is available. Operates on the CURRENT directory (cd there first, same
     as you would with `claude`). NOT read-only, unlike `run`/`ask` - see
     README "Coding mode" for exactly what each CLI is allowed to do.
+
+    Default mode is headless: file edits auto-accepted, Bash disallowed,
+    no prompts - safe for unattended/scripted use. --interactive instead
+    hands the terminal to a real CLI session with full tool access
+    (installing packages, running arbitrary commands) gated by that CLI's
+    own permission prompts - TASK becomes just the optional starting
+    prompt, and you converse with it directly from there.
     """
     click.echo(f"Working in: {os.getcwd()}\n")
+    if interactive:
+        code_mode.run_interactive(task, cwd=os.getcwd())
+        return
+    if not task:
+        raise click.UsageError("TASK is required unless --interactive is set.")
     result = asyncio.run(code_mode.run(task))
     click.echo("\n=== DONE ===\n")
     click.echo(result)
@@ -177,6 +222,74 @@ def reset():
     store = ContextStore()
     store.reset()
     click.echo("Context cleared.")
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def context(ctx: click.Context):
+    """Manage the persistent project-context file every agent sees on
+    every step, of every mode (run/code/ask), in every run.
+
+    Unlike `reset` (which only clears the CURRENT run's own transcript),
+    this survives resets - write conventions, architecture decisions, or
+    constraints here once instead of re-pasting them into every task.
+    """
+    if ctx.invoked_subcommand is None:
+        text = load_project_context()
+        path = project_context_path()
+        if not text:
+            click.echo('No project context set yet. Create it with `orchest context set "..."`,')
+            click.echo(f"or edit the file directly: {path}")
+        else:
+            click.echo(f"Project context ({path}):\n")
+            click.echo(text)
+
+
+@context.command("path")
+def context_path():
+    """Print the project-context file's path (e.g. to open it in an editor)."""
+    click.echo(str(project_context_path()))
+
+
+@context.command("set")
+@click.argument("text")
+def context_set(text: str):
+    """Set the project context to TEXT (overwrites). For anything longer
+    than a one-liner, edit the file directly instead - see `context path`.
+    """
+    save_project_context(text)
+    click.echo(f"Saved to {project_context_path()}")
+
+
+@context.command("clear")
+def context_clear():
+    """Delete the project-context file."""
+    if clear_project_context():
+        click.echo("Project context cleared.")
+    else:
+        click.echo("No project context to clear.")
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def usage(ctx: click.Context):
+    """Token/cost usage per agent, accumulated across every run since the
+    last `usage clear` (never auto-reset, unlike the per-run task list).
+
+    Cost in USD is only ever shown where a provider actually reports it
+    (currently: Claude Code). Everything else - Ollama (free), Codex,
+    Copilot, custom OpenAI-compatible agents - shows token counts only;
+    check that provider's own billing page for real $ cost.
+    """
+    if ctx.invoked_subcommand is None:
+        click.echo(usage_tracker.render())
+
+
+@usage.command("clear")
+def usage_clear():
+    """Reset all accumulated usage stats to zero."""
+    usage_tracker.clear()
+    click.echo("Usage stats cleared.")
 
 
 @main.group()
@@ -520,6 +633,19 @@ def settings_register_worker(model: str, host_name: str | None):
                 "-Protocol TCP -LocalPort 11434 -Action Allow"
             )
 
+        profile_result = net["network_profile"]
+        if profile_result == "changed":
+            click.echo("  Network switched from Public to Private - Windows locks down a lot more on Public (Network Discovery, sharing, often ping) regardless of firewall rules.")
+        elif profile_result == "already-private":
+            click.echo("  Network already Private/Domain.")
+        else:
+            click.echo(
+                "  ! Network profile not changed (declined the elevation prompt, or it failed) - if this "
+                "machine's network shows as \"Public\" in Settings > Network & Internet, switch it to "
+                '"Private" yourself, or run: Get-NetConnectionProfile | Set-NetConnectionProfile '
+                "-NetworkCategory Private"
+            )
+
     path_result = network.ensure_venv_scripts_on_path()
     if path_result == "added":
         click.echo("  Added this CLI to your user PATH - open a NEW terminal to use `orchest`/`orchestcli` from anywhere.")
@@ -540,6 +666,11 @@ def settings_register_worker(model: str, host_name: str | None):
     click.echo(f"  orchest settings add-host {name} --url http://{ip}:11434 --model {model}")
     click.echo(
         "\nNever port-forward 11434 to the public internet - Ollama has no built-in auth."
+    )
+    click.echo(
+        "If it's still not reachable after all this: check Settings > Network & Internet > "
+        "(your network) > Network profile type - set it to \"Private\", not \"Public\". Windows "
+        "silently blocks a lot more than firewall rules alone show on a Public network."
     )
 
     if network.open_ollama_log_window():

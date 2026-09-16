@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from .providers.antigravity_cli import AntigravityCliAgent
 from .providers.base import Agent
 from .providers.claude_code import ClaudeCodeAgent
+from .providers.codex_cli import CodexCliAgent
 from .providers.copilot_cli import CopilotCliAgent
 from .providers.gemini import GeminiAgent
 from .providers.ollama import OllamaAgent
@@ -77,7 +78,11 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
 
     if shutil.which("copilot"):
         try:
-            planners.append(CopilotCliAgent(name="copilot", tier="planner"))
+            # cloud-fast, not planner: weaker/less consistent than
+            # Claude Code/Codex for planning-tier judgment calls - still
+            # useful for medium-complexity escalated steps, at a cheaper
+            # tier than a full "boss" would spend.
+            cloud_fast.append(CopilotCliAgent(name="copilot", tier="cloud-fast"))
         except Exception as e:
             print(f"! Copilot CLI agent unavailable - {e}")
     else:
@@ -85,6 +90,14 @@ def build_fleet(local_hosts: list[str] | None = None) -> Fleet:
             "! No GitHub Copilot access - `npm install -g @github/copilot` and log in "
             "with your GitHub account (needs a Copilot plan; no separate API key)"
         )
+
+    if shutil.which("codex"):
+        try:
+            planners.append(CodexCliAgent(name="codex", tier="planner"))
+        except Exception as e:
+            print(f"! Codex CLI agent unavailable - {e}")
+    else:
+        print("! No OpenAI Codex access - install the Codex CLI and run `codex login`")
 
     for p in SettingsStore().load():
         # keep keys/weights aligned - only accounts that actually have a key set

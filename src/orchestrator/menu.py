@@ -20,6 +20,7 @@ from .router import DEFAULT_BIAS
 from .settings_store import PRESETS, SettingsStore
 from .task_list_store import TaskListStore
 from .task_list_store import render as render_tasks
+from . import usage_tracker
 
 BIAS_LEVELS = [
     (10, "██████████ 10  Max savings   - always try local first"),
@@ -186,12 +187,28 @@ def _pick_local_hosts_interactive() -> list[str] | None:
 
 
 async def _on_exhausted_interactive(failed_agent, error, candidates):
-    """Menu version of the same 'continue with a different model?' prompt."""
+    """Menu version of 'continue with a different model, wait for this one
+    specifically, or abort'."""
     if not candidates:
         return None
     print(f"\n! {failed_agent.name} looks out of capacity: {error}")
-    choices = [questionary.Choice(a.name, value=a) for a in candidates] + [questionary.Choice("abort", value=None)]
-    return questionary.select("Continue with a different model?", choices=choices, style=STYLE).ask()
+    choices = (
+        [questionary.Choice(f"switch to {a.name}", value=a) for a in candidates]
+        + [questionary.Choice(f"wait for {failed_agent.name} to recover", value="wait")]
+        + [questionary.Choice("abort", value=None)]
+    )
+    return questionary.select("What now?", choices=choices, style=STYLE).ask()
+
+
+async def _on_all_exhausted_interactive(planners, error):
+    """Menu version: every planner is out of capacity, ask any/all/abort."""
+    print(f"\n! Every planner is out of capacity: {error}")
+    choices = [
+        questionary.Choice("wait for ANY of them to recover", value="any"),
+        questionary.Choice("wait for ALL of them to recover", value="all"),
+        questionary.Choice("abort", value=None),
+    ]
+    return questionary.select("What now?", choices=choices, style=STYLE).ask()
 
 
 def _run_task() -> None:
@@ -234,7 +251,10 @@ def _run_task() -> None:
     bias = int(os.environ.get("LOCAL_BIAS", str(DEFAULT_BIAS)))
     print(f"\nLocal/cloud balance: {bias}/10 (change in Settings). Running...\n")
     result = asyncio.run(
-        plan_execute.run(task, fleet, store, max_steps=max_steps, on_exhausted=_on_exhausted_interactive)
+        plan_execute.run(
+            task, fleet, store, max_steps=max_steps,
+            on_exhausted=_on_exhausted_interactive, on_all_exhausted=_on_all_exhausted_interactive,
+        )
     )
     print("\n=== FINAL RESULT ===\n")
     print(result)
@@ -242,27 +262,144 @@ def _run_task() -> None:
 
 
 def _code_task() -> None:
+    """Confirm a target folder explicitly (rather than silently using
+    whatever happened to be current), then either:
+    - a real interactive CLI session (full permissions incl. Bash - its
+      own prompts are the actual safety net, not anything enforced here), or
+    - the headless auto-accept mode (edits only, Bash disallowed, no prompts).
+
+    The headless mode's loop is a real session too, not a one-shot: pick
+    the CLI once, then keep prompting for the next instruction until you
+    leave blank to go back - each later prompt continues the same Claude
+    Code conversation (real session memory via --continue), so it behaves
+    like actually opening `claude` and typing into it.
+
+    Neither path is an OS-level sandbox: Claude Code's Read/Write/Edit
+    tools stay scoped to the chosen folder and below by default (nothing
+    here grants more via --add-dir), but Bash is a real shell and could
+    still reach outside it - that's exactly why the interactive path
+    keeps its permission prompts on rather than pretending to be a jail
+    this wrapper can't actually enforce.
+    """
     from .modes import code as code_mode
 
-    print(f"Working in: {os.getcwd()}")
+    folder = questionary.text("Which folder should it work in?", default=os.getcwd(), style=STYLE).ask()
+    if not folder:
+        return
+    folder = os.path.abspath(folder)
+    if not os.path.isdir(folder):
+        print(f"! {folder} isn't a folder that exists.")
+        _pause()
+        return
+
+    mode = questionary.select(
+        "How should it work here?",
+        choices=[
+            questionary.Choice(
+                "Hybrid: local agent first, free - escalates to cloud only if it can't finish (saves tokens)",
+                value="hybrid",
+            ),
+            questionary.Choice(
+                "Specialized: Codex (frontend) + Claude Code (backend) split the task, one bounded exchange round",
+                value="specialized",
+            ),
+            questionary.Choice(
+                "Full interactive session (real permission prompts, Bash + installs allowed)",
+                value="interactive",
+            ),
+            questionary.Choice(
+                "Auto-accept edits only (faster, no prompts, Bash/tool-installs blocked)",
+                value="auto",
+            ),
+        ],
+        style=STYLE,
+    ).ask()
+    if not mode:
+        return
+
+    if mode == "specialized":
+        print(f"Working in: {folder}")
+        task = questionary.text("What should it do in this folder?", style=STYLE).ask()
+        if not task:
+            return
+        try:
+            result = asyncio.run(code_mode.run_specialized(task, folder))
+        except RuntimeError as e:
+            print(f"! {e}")
+            _pause()
+            return
+        print("\n=== DONE ===\n")
+        print(result)
+        _pause()
+        return
+
+    if mode == "hybrid":
+        print(f"Working in: {folder}")
+        task = questionary.text("What should it do in this folder?", style=STYLE).ask()
+        if not task:
+            return
+        fleet = build_fleet()
+        try:
+            result = asyncio.run(code_mode.run_hybrid(task, folder, fleet.local))
+        except RuntimeError as e:
+            print(f"! {e}")
+            _pause()
+            return
+        print("\n=== DONE ===\n")
+        print(result)
+        _pause()
+        return
+
+    if mode == "interactive":
+        print(f"Working in: {folder}")
+        if not questionary.confirm(
+            "This grants full tool access including Bash, gated by that CLI's own prompts - continue?",
+            default=True, style=STYLE,
+        ).ask():
+            return
+        task = questionary.text("Starting prompt (optional - blank just opens the session):", style=STYLE).ask()
+        code_mode.run_interactive(task or None, cwd=folder)
+        return
+
+    print(f"Working in: {folder}")
     print(
-        "This mode actually edits/writes files here (and depending on which CLI is used, "
-        "may run commands) - not read-only like the other options. See README \"Coding mode\"."
+        "This mode actually edits/writes files here (Bash disallowed, edits auto-accepted, no prompts) "
+        "- not fully interactive. See README \"Coding mode\"."
     )
     if not questionary.confirm("Continue?", default=True, style=STYLE).ask():
         return
-    task = questionary.text("What should it do in this folder?", style=STYLE).ask()
-    if not task:
-        return
+
+    old_cwd = os.getcwd()
+    os.chdir(folder)
     try:
-        result = asyncio.run(code_mode.run(task))
-    except RuntimeError as e:
-        print(f"! {e}")
-        _pause()
-        return
-    print("\n=== DONE ===\n")
-    print(result)
-    _pause()
+        try:
+            name, agent = code_mode.pick_agent()
+        except RuntimeError as e:
+            print(f"! {e}")
+            _pause()
+            return
+        print(f"Using {name} to code in this folder (see README for what --mode=code grants).")
+        if name == "claude-code":
+            print("Session memory is on - later prompts here remember earlier ones, like a real `claude` session.\n")
+
+        continue_session = False
+        while True:
+            task = questionary.text(
+                "What should it do in this folder? (blank to go back)", style=STYLE
+            ).ask()
+            if not task:
+                return
+            try:
+                result = asyncio.run(code_mode.run(task, agent=agent, continue_session=continue_session))
+            except RuntimeError as e:
+                print(f"! {e}")
+                continue
+            print("\n=== DONE ===\n")
+            print(result)
+            print()
+            continue_session = True
+    finally:
+        os.chdir(old_cwd)
 
 
 def _ask_question() -> None:
@@ -638,6 +775,11 @@ def _hosts_menu() -> None:
             )
             print(f"  orchest settings add-host {name} --url http://{ip}:11434 --model {model}")
             print("\nNever port-forward 11434 to the public internet - Ollama has no built-in auth.")
+            print(
+                "If it's still not reachable after all this: check Settings > Network & Internet > "
+                "(your network) > Network profile type - set it to \"Private\", not \"Public\". Windows "
+                "silently blocks a lot more than firewall rules alone show on a Public network."
+            )
 
             if network.open_ollama_log_window():
                 print(
@@ -734,6 +876,15 @@ def _reset_menu() -> None:
     _pause()
 
 
+def _usage_menu() -> None:
+    print(usage_tracker.render())
+    print()
+    if questionary.confirm("Clear accumulated usage stats?", default=False, style=STYLE).ask():
+        usage_tracker.clear()
+        print("Usage stats cleared.")
+    _pause()
+
+
 def main_menu() -> None:
     """Entry point for `orchest` with no subcommand, or `orchest menu`."""
     print(BANNER)
@@ -747,6 +898,7 @@ def main_menu() -> None:
                 "Ask a question (cross-check across models)",
                 "View task list (current/last run)",
                 "Status",
+                "Token usage",
                 "Settings",
                 "Reset shared context",
                 "Exit",
@@ -767,6 +919,8 @@ def main_menu() -> None:
         elif choice == "Status":
             _print_status()
             _pause()
+        elif choice == "Token usage":
+            _usage_menu()
         elif choice == "Settings":
             _settings_menu()
         elif choice == "Reset shared context":

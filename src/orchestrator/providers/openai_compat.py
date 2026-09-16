@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from .. import usage_tracker
 from .base import Agent
 
 
@@ -128,6 +129,10 @@ class OpenAICompatAgent(Agent):
                         resp.raise_for_status()
                         self._note_success(key)
                         data = resp.json()
+                        usage = data.get("usage") or {}
+                        usage_tracker.record(
+                            self.name, usage.get("prompt_tokens"), usage.get("completion_tokens")
+                        )
                         return data["choices"][0]["message"]["content"].strip()
                     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
                         self._note_failure(key)

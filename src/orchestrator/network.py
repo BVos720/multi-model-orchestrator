@@ -394,23 +394,87 @@ def _add_firewall_rule_elevated() -> str:
     return "added" if _firewall_rule_exists() else "declined-or-error"
 
 
+def _public_network_profile_names() -> list[str]:
+    """Names of any currently-connected network(s) Windows has classified
+    as "Public" - which locks down FAR more than firewall rules alone
+    show. Network Discovery, File/Printer sharing, and (depending on the
+    exact Windows build) even a specific inbound-allow rule can behave
+    more restrictively on Public than on Private/Domain. This was a real,
+    previously-hit cause of "everything's configured but still doesn't
+    connect" - a plain firewall-rule check alone wouldn't have caught it.
+    Returns [] if nothing's Public (including on error - fails quiet,
+    since this is a diagnostic, not something to block on)."""
+    try:
+        check = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-NetConnectionProfile | Where-Object {$_.NetworkCategory -eq 'Public'}).Name -join '|'"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [n for n in check.stdout.strip().split("|") if n]
+
+
+def _set_network_profile_private_elevated() -> str:
+    """Switch any currently-Public network connection(s) to Private, via a
+    real UAC elevation prompt - same never-silent pattern as the firewall
+    rule above. Only worth doing on a network you actually trust (e.g.
+    your own home LAN) - Private relaxes protections Public deliberately
+    keeps tight for a reason. Returns "changed", "already-private",
+    "declined-or-error", or "unsupported" (non-Windows)."""
+    if os.name != "nt":
+        return "unsupported"
+    if not _public_network_profile_names():
+        return "already-private"
+
+    script_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(
+                "Get-NetConnectionProfile | Where-Object {$_.NetworkCategory -eq 'Public'} "
+                "| Set-NetConnectionProfile -NetworkCategory Private"
+            )
+            script_path = f.name
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Start-Process powershell -Verb RunAs -Wait -ArgumentList "
+             f"'-NoProfile -ExecutionPolicy Bypass -File \"{script_path}\"'"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        if script_path:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+
+    return "declined-or-error" if _public_network_profile_names() else "changed"
+
+
 def configure_worker_networking() -> dict:
     """Best-effort automation of the worker-PC networking setup that used
     to be a manual, easy-to-get-wrong dance (see README "Networking two
-    PCs"): persist OLLAMA_HOST=0.0.0.0 and add a firewall allow rule for
-    Ollama's port. Windows-only, since this project's whole worker-
-    networking story already is - a no-op elsewhere.
+    PCs"): persist OLLAMA_HOST=0.0.0.0, add a firewall allow rule for
+    Ollama's port, and switch a Public network connection to Private.
+    Windows-only, since this project's whole worker-networking story
+    already is - a no-op elsewhere.
 
     Returns a dict describing what actually happened to each piece
-    ({"platform_supported", "ollama_host", "firewall"}) so the caller
-    reports it honestly instead of assuming success - the firewall step
-    in particular can be legitimately declined at its UAC prompt."""
+    ({"platform_supported", "ollama_host", "firewall", "network_profile"})
+    so the caller reports it honestly instead of assuming success - the
+    firewall and network-profile steps in particular can be legitimately
+    declined at their UAC prompts."""
     if os.name != "nt":
         return {"platform_supported": False}
     return {
         "platform_supported": True,
         "ollama_host": _set_ollama_host_env(),
         "firewall": _add_firewall_rule_elevated(),
+        "network_profile": _set_network_profile_private_elevated(),
     }
 
 
