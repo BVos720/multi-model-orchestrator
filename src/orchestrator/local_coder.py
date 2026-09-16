@@ -160,6 +160,7 @@ async def run(
     folder: str,
     ollama: OllamaAgent,
     model: str | None = None,
+    prefer_size: str | None = "big",
     max_turns: int = 12,
 ) -> tuple[str, bool]:
     """Free-first coding attempt: a local model gets real (but strictly
@@ -170,9 +171,18 @@ async def run(
     mode) should treat completed=False as "escalate to a real cloud
     coding CLI" rather than trust an ambiguous stop.
 
-    model, if given, overrides which host/model prefer_size-style routing
-    picks - pass a bigger local model here (slower per call, but fewer
-    calls needed) if a smaller one isn't reliable at emitting tool calls.
+    prefer_size defaults to "big" (see HostConfig.size) - actually writing
+    files is worth spending more local compute on than a throwaway swarm
+    text step: a confirmed real failure (a 7B model mis-escaping a
+    string, producing a file that doesn't even parse, then confidently
+    calling done anyway) is exactly the class of mistake a bigger local
+    model is less likely to make. Only takes effect if you've actually
+    registered a "big"-sized host (falls back to whatever's healthy/free
+    otherwise, same as everywhere else prefer_size is used).
+
+    model, if given, overrides host/size-based routing entirely - pass a
+    specific model here if you want exactly that one regardless of size
+    hints.
     """
     folder_path = Path(folder).resolve()
     messages = [
@@ -181,7 +191,7 @@ async def run(
     ]
 
     for _ in range(max_turns):
-        raw = await ollama.raw_chat(messages, tools=TOOLS, model=model)
+        raw = await ollama.raw_chat(messages, tools=TOOLS, model=model, prefer_size=prefer_size)
         message = raw.get("message", {})
         tool_calls = message.get("tool_calls") or []
         content = message.get("content", "")

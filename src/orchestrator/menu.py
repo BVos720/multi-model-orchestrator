@@ -263,18 +263,25 @@ def _run_task() -> None:
 
 def _code_task() -> None:
     """Confirm a target folder explicitly (rather than silently using
-    whatever happened to be current), then either:
-    - a real interactive CLI session (full permissions incl. Bash - its
-      own prompts are the actual safety net, not anything enforced here), or
-    - the headless auto-accept mode (edits only, Bash disallowed, no prompts).
+    whatever happened to be current), then pick one of four modes.
 
-    The headless mode's loop is a real session too, not a one-shot: pick
-    the CLI once, then keep prompting for the next instruction until you
-    leave blank to go back - each later prompt continues the same Claude
-    Code conversation (real session memory via --continue), so it behaves
-    like actually opening `claude` and typing into it.
+    None of these are one-shot - every mode loops, prompting for the next
+    instruction (blank to go back) instead of dropping you back at the
+    main menu after a single result, so you can follow up ("fix that
+    bug", "now add tests") without re-navigating the menu each time:
+    - auto-accept: the same real Claude Code conversation persists across
+      prompts (real session memory via --continue), like actually opening
+      `claude` and typing into it.
+    - hybrid/specialized: no native cross-call session memory (these
+      orchestrate different agents per call), so each follow-up prompt
+      has the previous result prepended as context instead, which is
+      what makes "fix that bug" resolve to something concrete.
+    - interactive: a single real session for that one invocation - once
+      you exit it, you're back at this same folder/mode picker to start
+      another (interactive's own back-and-forth happens inside the CLI
+      itself, not via this loop).
 
-    Neither path is an OS-level sandbox: Claude Code's Read/Write/Edit
+    No path here is an OS-level sandbox: Claude Code's Read/Write/Edit
     tools stay scoped to the chosen folder and below by default (nothing
     here grants more via --add-dir), but Bash is a real shell and could
     still reach outside it - that's exactly why the interactive path
@@ -319,36 +326,44 @@ def _code_task() -> None:
 
     if mode == "specialized":
         print(f"Working in: {folder}")
-        task = questionary.text("What should it do in this folder?", style=STYLE).ask()
-        if not task:
-            return
-        try:
-            result = asyncio.run(code_mode.run_specialized(task, folder))
-        except RuntimeError as e:
-            print(f"! {e}")
-            _pause()
-            return
-        print("\n=== DONE ===\n")
-        print(result)
-        _pause()
-        return
+        result = None
+        while True:
+            task = questionary.text(
+                "What should it do in this folder? (blank to go back)", style=STYLE
+            ).ask()
+            if not task:
+                return
+            if result:
+                task = f"Follow-up on the previous result:\n{result[:2000]}\n\nNew instruction: {task}"
+            try:
+                result = asyncio.run(code_mode.run_specialized(task, folder))
+            except RuntimeError as e:
+                print(f"! {e}")
+                continue
+            print("\n=== DONE ===\n")
+            print(result)
+            print()
 
     if mode == "hybrid":
         print(f"Working in: {folder}")
-        task = questionary.text("What should it do in this folder?", style=STYLE).ask()
-        if not task:
-            return
         fleet = build_fleet()
-        try:
-            result = asyncio.run(code_mode.run_hybrid(task, folder, fleet.local))
-        except RuntimeError as e:
-            print(f"! {e}")
-            _pause()
-            return
-        print("\n=== DONE ===\n")
-        print(result)
-        _pause()
-        return
+        result = None
+        while True:
+            task = questionary.text(
+                "What should it do in this folder? (blank to go back)", style=STYLE
+            ).ask()
+            if not task:
+                return
+            if result:
+                task = f"Follow-up on the previous result:\n{result[:2000]}\n\nNew instruction: {task}"
+            try:
+                result = asyncio.run(code_mode.run_hybrid(task, folder, fleet.local))
+            except RuntimeError as e:
+                print(f"! {e}")
+                continue
+            print("\n=== DONE ===\n")
+            print(result)
+            print()
 
     if mode == "interactive":
         print(f"Working in: {folder}")
