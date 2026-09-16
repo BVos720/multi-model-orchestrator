@@ -1,17 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import ipaddress
 import json
 import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+# Windows-console child processes this app has opened for the user (right
+# now: the live Ollama log window) but doesn't otherwise own the lifetime
+# of - a bare subprocess.Popen with CREATE_NEW_CONSOLE is fully detached
+# and would happily keep running (and its window stay open) forever after
+# `orchest` itself exits. Registered here so the atexit hook below can
+# clean them up whenever this process shuts down, by any normal path.
+_spawned_windows: list[subprocess.Popen] = []
+
+
+def _close_spawned_windows() -> None:
+    for proc in _spawned_windows:
+        try:
+            if proc.poll() is None:  # still running
+                proc.terminate()
+        except OSError:
+            pass
+
+
+atexit.register(_close_spawned_windows)
 
 # Tailscale's CGNAT range - every device on a tailnet gets a stable IP in
 # here, reachable only over its WireGuard-encrypted, device-authenticated
@@ -275,10 +297,11 @@ def open_ollama_log_window() -> bool:
         f"Get-Content -Path '{log_path}' -Wait -Tail 40"
     )
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["powershell", "-NoExit", "-Command", command],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
+        _spawned_windows.append(proc)
         return True
     except OSError:
         return False
@@ -389,3 +412,44 @@ def configure_worker_networking() -> dict:
         "ollama_host": _set_ollama_host_env(),
         "firewall": _add_firewall_rule_elevated(),
     }
+
+
+def ensure_venv_scripts_on_path() -> str:
+    """Idempotently add this Python environment's own Scripts folder (where
+    `orchest.exe`/`orchestcli.exe` actually live) to the USER PATH, so they
+    work from any new terminal, any directory - not just right after
+    `pip install`, and not just this once. Safe to call on every run:
+    skips cleanly if it's already there rather than piling up duplicate
+    PATH entries, and re-adds it if the venv ever moved (a stale entry
+    from an old location is left alone rather than guessed at and
+    removed - pruning PATH automatically is too easy to get wrong).
+
+    Skipped for a PyInstaller-frozen build (sys.executable there is a
+    temp extraction path, not the real .exe's location) and on non-
+    Windows. Only affects NEW processes started after this runs - never
+    the one currently running. Returns "already-on-path", "added",
+    "unsupported", or "error"."""
+    if os.name != "nt" or getattr(sys, "frozen", False):
+        return "unsupported"
+    scripts_dir = str(Path(sys.executable).parent)
+    try:
+        check = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", '[Environment]::GetEnvironmentVariable("Path", "User")'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "error"
+    current = check.stdout.strip()
+    parts = [p for p in current.split(";") if p]
+    if any(p.rstrip("\\/").lower() == scripts_dir.rstrip("\\/").lower() for p in parts):
+        return "already-on-path"
+    new_path = ";".join(parts + [scripts_dir])
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f'[Environment]::SetEnvironmentVariable("Path", "{new_path}", "User")'],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        return "added"
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return "error"

@@ -42,7 +42,12 @@ STYLE = questionary.Style(
 )
 
 def _pause() -> None:
-    questionary.text("Press enter to continue...", style=STYLE).ask()
+    """No-op. Every menu action used to block here on "press enter to
+    continue" before showing the next prompt - pure friction, since
+    nothing clears the screen, so whatever was just printed stays visible
+    in scrollback either way. Kept as a function (rather than deleting
+    the ~35 call sites) so removing the wait was a one-line change."""
+    return
 
 
 def _pull_model_with_progress(url: str, model: str) -> bool:
@@ -582,9 +587,50 @@ def _hosts_menu() -> None:
             model = questionary.text("Model you have (or will) pull on THIS machine:", default="qwen2.5-coder:7b", style=STYLE).ask()
             name = questionary.text("Suggested host name:", default=_socket.gethostname().lower(), style=STYLE).ask()
             ip = network.local_ip()
+
+            print("Configuring this machine's networking for worker use...")
+            net = network.configure_worker_networking()
+            if not net.get("platform_supported", True):
+                print("(Skipped - Windows-only. Set OLLAMA_HOST=0.0.0.0 and open the firewall port yourself.)")
+            else:
+                host_result = net["ollama_host"]
+                if host_result == "set":
+                    print(
+                        "  OLLAMA_HOST=0.0.0.0:11434 saved - Ollama must be RESTARTED to pick this up "
+                        "(quit it fully from the tray icon first, then reopen it or re-run `ollama serve`)."
+                    )
+                elif host_result == "already-set":
+                    print("  OLLAMA_HOST already set to 0.0.0.0:11434.")
+                else:
+                    print(
+                        '  ! Could not set OLLAMA_HOST automatically - set it yourself: '
+                        '$env:OLLAMA_HOST = "0.0.0.0:11434" (permanently, then restart Ollama).'
+                    )
+
+                firewall_result = net["firewall"]
+                if firewall_result == "added":
+                    print("  Firewall rule added - inbound TCP 11434 now allowed.")
+                elif firewall_result == "already-present":
+                    print("  Firewall rule already present.")
+                else:
+                    print(
+                        "  ! Firewall rule not added (declined the elevation prompt, or it failed) - add it "
+                        'yourself: New-NetFirewallRule -DisplayName "Ollama (11434)" -Direction Inbound '
+                        "-Protocol TCP -LocalPort 11434 -Action Allow"
+                    )
+
+            path_result = network.ensure_venv_scripts_on_path()
+            if path_result == "added":
+                print("  Added this CLI to your user PATH - open a NEW terminal to use `orchest`/`orchestcli` from anywhere.")
+            elif path_result == "already-on-path":
+                print("  This CLI is already on your user PATH.")
+
             reachable = asyncio.run(network.ollama_reachable())
             print(f"\nThis machine's LAN IP: {ip}")
-            print(f"Ollama on :11434: {'reachable' if reachable else 'NOT reachable - is `ollama serve` running?'}")
+            print(f"Ollama on :11434 (localhost): {'reachable' if reachable else 'NOT reachable - is `ollama serve` running?'}")
+            if net.get("ollama_host") == "set":
+                print("(That localhost check can't confirm the new OLLAMA_HOST took effect yet - restart Ollama first, per above.)")
+
             print(
                 "\nMake sure this machine and the supervisor PC are on the same network "
                 "(direct Ethernet cable or Tailscale - see README \"Networking two PCs\"), "
@@ -592,6 +638,17 @@ def _hosts_menu() -> None:
             )
             print(f"  orchest settings add-host {name} --url http://{ip}:11434 --model {model}")
             print("\nNever port-forward 11434 to the public internet - Ollama has no built-in auth.")
+
+            if network.open_ollama_log_window():
+                print(
+                    "\nOpened a live Ollama log window - watch it for requests arriving once the "
+                    "supervisor registers this machine and starts sending it work."
+                )
+            else:
+                print(
+                    f"\n(No live log window - {network.ollama_log_path()} doesn't exist yet. "
+                    "Start Ollama at least once, then re-run this to get one.)"
+                )
             _pause()
 
 

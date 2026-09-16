@@ -470,30 +470,68 @@ def settings_remove_host(name: str):
 @click.option("--model", default="qwen2.5-coder:7b", show_default=True, help="Model you have (or will) pull on THIS machine.")
 @click.option("--name", "host_name", default=None, help="Name to suggest for this host (default: this machine's hostname).")
 def settings_register_worker(model: str, host_name: str | None):
-    """Show what to run on the SUPERVISOR PC to add THIS machine as a worker.
+    """Configure THIS machine as a worker, and show what to run on the
+    SUPERVISOR PC to add it.
 
     This machine doesn't need the orchestrator installed at all as a
     worker - just Ollama running. Run this here to get the exact
     `settings add-host` command to paste on the other PC.
+
+    Also handles the networking setup that's easy to get wrong by hand:
+    persists OLLAMA_HOST=0.0.0.0 (Ollama listens on loopback ONLY by
+    default - the single most common reason a worker never answers),
+    adds a Windows Firewall inbound-allow rule for its port (via a real
+    UAC prompt - never done silently), and puts this CLI on the user
+    PATH so it's callable from any terminal, any directory, from now on.
     """
     import socket as _socket
 
     ip = network.local_ip()
     name = host_name or _socket.gethostname().lower()
-    reachable = asyncio.run(network.ollama_reachable())
 
-    click.echo(f"This machine's LAN IP: {ip}")
+    click.echo("Configuring this machine's networking for worker use...")
+    net = network.configure_worker_networking()
+    if not net.get("platform_supported", True):
+        click.echo("(Skipped - Windows-only. Set OLLAMA_HOST=0.0.0.0 and open the firewall port yourself.)")
+    else:
+        host_result = net["ollama_host"]
+        if host_result == "set":
+            click.echo(
+                "  OLLAMA_HOST=0.0.0.0:11434 saved - Ollama must be RESTARTED to pick this up "
+                "(quit it fully from the tray icon first, then reopen it or re-run `ollama serve`)."
+            )
+        elif host_result == "already-set":
+            click.echo("  OLLAMA_HOST already set to 0.0.0.0:11434.")
+        else:
+            click.echo(
+                '  ! Could not set OLLAMA_HOST automatically - set it yourself: '
+                '$env:OLLAMA_HOST = "0.0.0.0:11434" (permanently, then restart Ollama).'
+            )
+
+        firewall_result = net["firewall"]
+        if firewall_result == "added":
+            click.echo("  Firewall rule added - inbound TCP 11434 now allowed.")
+        elif firewall_result == "already-present":
+            click.echo("  Firewall rule already present.")
+        else:
+            click.echo(
+                "  ! Firewall rule not added (declined the elevation prompt, or it failed) - add it "
+                'yourself: New-NetFirewallRule -DisplayName "Ollama (11434)" -Direction Inbound '
+                "-Protocol TCP -LocalPort 11434 -Action Allow"
+            )
+
+    path_result = network.ensure_venv_scripts_on_path()
+    if path_result == "added":
+        click.echo("  Added this CLI to your user PATH - open a NEW terminal to use `orchest`/`orchestcli` from anywhere.")
+    elif path_result == "already-on-path":
+        click.echo("  This CLI is already on your user PATH.")
+
+    reachable = asyncio.run(network.ollama_reachable())
+    click.echo(f"\nThis machine's LAN IP: {ip}")
     click.echo(f"Ollama on :11434 (localhost): {'reachable' if reachable else 'NOT reachable - is `ollama serve` running?'}")
-    click.echo(
-        "\nOllama listens on localhost ONLY by default - the supervisor can't reach it "
-        "from another PC unless you set OLLAMA_HOST before starting it here:\n"
-    )
-    click.echo('  $env:OLLAMA_HOST = "0.0.0.0:11434"; ollama serve')
-    click.echo(
-        "\n(Using the Ollama desktop app instead of `ollama serve`? Set OLLAMA_HOST=0.0.0.0 "
-        "as a permanent Windows environment variable and restart the app - it only reads it "
-        "on startup.)"
-    )
+    if net.get("ollama_host") == "set":
+        click.echo("(That localhost check can't confirm the new OLLAMA_HOST took effect yet - restart Ollama first, per above.)")
+
     click.echo(
         "\nMake sure this machine and the supervisor PC are on the same network "
         "(direct Ethernet cable or Tailscale - see README \"Networking two PCs\"), "
