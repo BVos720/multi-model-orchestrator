@@ -28,7 +28,7 @@ from .modes import code as code_mode
 from .modes import debate, plan_execute
 from . import network
 from .project_context import clear_project_context, load_project_context, project_context_path, save_project_context
-from . import usage_tracker
+from . import dispatch_log, usage_tracker
 from .router import DEFAULT_BIAS
 from .settings_store import PRESETS, SettingsStore
 from .task_list_store import TaskListStore, render
@@ -290,6 +290,31 @@ def usage_clear():
     """Reset all accumulated usage stats to zero."""
     usage_tracker.clear()
     click.echo("Usage stats cleared.")
+
+
+@main.group("dispatch-log", invoke_without_command=True)
+@click.pass_context
+def dispatch_log_cmd(ctx: click.Context):
+    """Show exactly what was sent to each local (Ollama) host and when -
+    the supervisor-side "what did we send, and who received it" log.
+
+    This is the supervisor's own record of every request it made, not
+    something read off the worker - a worker only ever needs bare Ollama
+    installed, so we can't inject logging into its side of the exchange.
+    The closest worker-side equivalent is Ollama's own log (see
+    `settings register-worker`'s live log window, or ollama_log_path()) -
+    it shows every request's source IP/timing/status via its own [GIN]
+    lines, just not the prompt content itself (Ollama doesn't log that).
+    """
+    if ctx.invoked_subcommand is None:
+        click.echo(dispatch_log.render_recent())
+
+
+@dispatch_log_cmd.command("clear")
+def dispatch_log_clear():
+    """Delete the dispatch log."""
+    dispatch_log.clear()
+    click.echo("Dispatch log cleared.")
 
 
 @main.group()

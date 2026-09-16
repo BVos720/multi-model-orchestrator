@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .. import usage_tracker
+from .. import dispatch_log, usage_tracker
 from ..hosts_store import HostConfig
 from .base import Agent
 
@@ -122,7 +122,12 @@ class OllamaAgent(Agent):
                         continue  # this host is at its concurrency limit - try the next one
                     async with sem:
                         try:
-                            resp = await client.post(f"{host.url}/api/chat", json=build_body(host))
+                            body = build_body(host)
+                            preview = "\n".join(
+                                f"[{m.get('role')}] {m.get('content', '')}" for m in body.get("messages", [])
+                            )
+                            dispatch_log.record(host.name, host.url, body.get("model", host.model), preview)
+                            resp = await client.post(f"{host.url}/api/chat", json=body)
                             resp.raise_for_status()
                             self._note_success(host)
                             return resp.json()

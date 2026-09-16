@@ -20,7 +20,7 @@ from .router import DEFAULT_BIAS
 from .settings_store import PRESETS, SettingsStore
 from .task_list_store import TaskListStore
 from .task_list_store import render as render_tasks
-from . import usage_tracker
+from . import dispatch_log, usage_tracker
 
 BIAS_LEVELS = [
     (10, "██████████ 10  Max savings   - always try local first"),
@@ -885,6 +885,15 @@ def _usage_menu() -> None:
     _pause()
 
 
+def _dispatch_log_menu() -> None:
+    print(dispatch_log.render_recent())
+    print()
+    if questionary.confirm("Clear the dispatch log?", default=False, style=STYLE).ask():
+        dispatch_log.clear()
+        print("Dispatch log cleared.")
+    _pause()
+
+
 def main_menu() -> None:
     """Entry point for `orchest` with no subcommand, or `orchest menu`."""
     print(BANNER)
@@ -899,6 +908,7 @@ def main_menu() -> None:
                 "View task list (current/last run)",
                 "Status",
                 "Token usage",
+                "Dispatch log (what was sent to which local host)",
                 "Settings",
                 "Reset shared context",
                 "Exit",
@@ -921,6 +931,8 @@ def main_menu() -> None:
             _pause()
         elif choice == "Token usage":
             _usage_menu()
+        elif choice.startswith("Dispatch log"):
+            _dispatch_log_menu()
         elif choice == "Settings":
             _settings_menu()
         elif choice == "Reset shared context":

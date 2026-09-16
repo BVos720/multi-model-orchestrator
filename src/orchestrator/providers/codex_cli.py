@@ -90,7 +90,19 @@ class CodexCliAgent(Agent):
                 await proc.wait()  # reap it - avoid leaving a zombie/orphaned process behind
                 raise RuntimeError(f"codex CLI timed out after {self.timeout}s and was killed.")
             if proc.returncode != 0:
-                raise RuntimeError(f"codex CLI failed: {stderr.decode(errors='replace')[:2000]}")
+                # Confirmed by hitting a real exhausted-quota account: codex's
+                # actual error/limit message often lands in stdout (as a
+                # --json event) rather than stderr - a RuntimeError built
+                # from stderr alone can be an unhelpful "Reading additional
+                # input from stdin..." with the real reason silently
+                # dropped, which also means _is_quota_error() never gets a
+                # chance to recognize it. Include both, stdout first, since
+                # that's where the actually useful text tends to be.
+                err = stdout.decode(errors="replace").strip()
+                stderr_text = stderr.decode(errors="replace").strip()
+                if stderr_text:
+                    err = f"{err}\n{stderr_text}" if err else stderr_text
+                raise RuntimeError(f"codex CLI failed: {err[:2000]}")
 
             input_tokens = output_tokens = None
             for line in stdout.decode(errors="replace").splitlines():
